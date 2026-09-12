@@ -1,0 +1,35 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next.js
+.next/
+out/
+build/
+dist/
+
+# env
+.env
+.env*.local
+.env.production
+.dev.vars
+
+# logs
+logs/
+*.log
+npm-debug.log*
+.pm2/
+
+# misc
+.DS_Store
+*.pem
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+
+# backups
+*.backup
+*.bak
+*.tar.gz
+*.zip
