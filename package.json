@@ -4,28 +4,25 @@
   "private": true,
   "description": "VOXEMBLY — the voice-native cognition OS. Every dictation becomes a typed, versioned, executable Thoughtform.",
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
     "start": "next start -p 3000 -H 0.0.0.0",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "dmr": "tsx scripts/dmr-eval.ts",
-    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
+    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
+    "test": "curl -sS http://localhost:3000/api/health"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.6.1",
+    "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.49.0",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "framer-motion": "^12.4.0",
+    "framer-motion": "^11.15.0",
     "idb": "^8.0.2",
     "lucide-react": "^0.475.0",
-    "next": "15.5.25",
+    "next": "^15.5.25",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-force-graph-2d": "^1.27.0",
-    "tailwind-merge": "^3.0.1",
-    "zod": "^3.24.2",
+    "tailwind-merge": "^2.6.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -36,7 +33,6 @@
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "tailwindcss-animate": "^1.0.7",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   },
   "engines": {

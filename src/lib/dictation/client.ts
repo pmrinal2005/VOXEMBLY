@@ -56,6 +56,30 @@ export const LIMITS = {
   sampleRates: [8000, 16000, 22050, 24000, 32000, 44100, 48000],
 } as const;
 
+/**
+ * Verified against the live docs (Sync STT error handling table):
+ *  400 bad_audio | audio_too_short | bad_request, 401 (detail), 413 audio_too_large,
+ *  415 unsupported_media_type, 429 (Retry-After), 503 capacity_exceeded | service_unavailable,
+ *  504 inference_timeout (30 s server deadline), 500 inference_error.
+ * 400/413/415 are request-side: never blind-retry them.
+ */
+export const TERMINAL_CODES = new Set(["bad_audio", "audio_too_short", "bad_request", "unsupported_media_type", "unauthorized"]);
+
+/** Human-readable recovery hints surfaced in the UI instead of a raw error. */
+export const ERROR_HINTS: Record<string, string> = {
+  audio_too_short: "That was under 80 ms — hold the key a little longer.",
+  bad_audio: "The clip was malformed. Re-record as 16-bit WAV.",
+  bad_request: "The dictation config exceeded a field limit. Trimming and retrying.",
+  unsupported_media_type: "Unsupported audio format — VOXEMBLY needs 16-bit WAV or PCM S16LE.",
+  audio_too_large: "Over 120 s / 40 MB — routed to the Long-form Thoughtform pathway.",
+  unauthorized: "ASSEMBLYAI_API_KEY is missing or invalid.",
+  rate_limited: "AssemblyAI rate limit hit — retrying with backoff.",
+  capacity_exceeded: "AssemblyAI is at capacity — retrying shortly.",
+  service_unavailable: "Model is warming up (cold start) — retrying.",
+  inference_timeout: "The request exceeded the 30 s server deadline.",
+  inference_error: "Internal model error — retried once.",
+};
+
 export interface DictationConfig {
   prompt?: string;
   keyterms_prompt?: string[];
@@ -219,14 +243,20 @@ export class DictationClient {
       throw new DictationError(400, "bad_audio", "Raw PCM requires config.sample_rate and config.channels");
     }
 
+    // `audio_too_short`: a <80 ms key tap is a user slip, not an error — swallow it before it costs a request.
+    if ((req.durationHintMs ?? Infinity) < LIMITS.minDurationMs) {
+      throw new DictationError(400, "audio_too_short", ERROR_HINTS.audio_too_short);
+    }
+
     let retries = 0;
+    let cfgInFlight = cfg;
     const t0 = performance.now();
     const warmed = this.wasWarmedRecently(region);
 
     for (;;) {
       const form = new FormData();
       form.append("audio", new Blob([bytes as BlobPart], { type: req.contentType }), req.contentType === "audio/wav" ? "dictation.wav" : "dictation.pcm");
-      if (cfg) form.append("config", new Blob([JSON.stringify(cfg)], { type: "application/json" }), "config.json");
+      if (cfgInFlight) form.append("config", new Blob([JSON.stringify(cfgInFlight)], { type: "application/json" }), "config.json");
 
       let res: Response;
       try {
@@ -271,7 +301,15 @@ export class DictationClient {
 
       // 413 audio_too_large → Long-form Thoughtform pathway (Pre-recorded STT).
       if (res.status === 413 || code === "audio_too_large") {
-        return this.transcribePrerecorded(bytes, req.contentType, cfg, region, retries);
+        return this.transcribePrerecorded(bytes, req.contentType, cfgInFlight, region, retries);
+      }
+
+      // 400 bad_request can mean "config field limits exceeded" — the Prompt Composer is memory-driven and
+      // can grow. Shed the optional context/keyterms once and retry rather than losing the utterance.
+      if (res.status === 400 && code === "bad_request" && cfgInFlight && retries < 1) {
+        retries++;
+        cfgInFlight = sanitizeConfig({ prompt: cfgInFlight.prompt, timestamps: cfgInFlight.timestamps, sample_rate: cfgInFlight.sample_rate, channels: cfgInFlight.channels });
+        continue;
       }
 
       // 429 / 503 are transient — honour Retry-After, exponential backoff, cap at 2 retries.
@@ -288,7 +326,7 @@ export class DictationClient {
         continue;
       }
 
-      throw new DictationError(res.status, code, body.detail ?? body.message ?? `Sync STT failed (${code})`, retryAfter, body.session_id);
+      throw new DictationError(res.status, code, ERROR_HINTS[code] ?? body.detail ?? body.message ?? `Sync STT failed (${code})`, retryAfter, body.session_id);
     }
   }
 

@@ -5,8 +5,6 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "45mb" },
   },
-  // react-force-graph pulls in canvas-oriented deps that must stay client-side.
-  transpilePackages: ["react-force-graph-2d"],
   async headers() {
     return [
       {

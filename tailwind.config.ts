@@ -37,10 +37,12 @@ const config: Config = {
           "50%": { boxShadow: "0 0 0 28px rgba(34,211,238,0)" },
         },
         "fade-up": { from: { opacity: "0", transform: "translateY(6px)" }, to: { opacity: "1", transform: "translateY(0)" } },
+        shimmer: { "100%": { transform: "translateX(100%)" } },
       },
       animation: {
         "orb-pulse": "orb-pulse 1.4s ease-out infinite",
         "fade-up": "fade-up .35s ease-out both",
+        shimmer: "shimmer 1.6s infinite",
       },
     },
   },
