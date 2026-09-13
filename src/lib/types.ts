@@ -1,10 +1,66 @@
 // ============================================================================
-// VOXEMBLY — Core type system. The single source of truth.
+// VOXEMBLY — Core type system. The single source of truth for the whole app.
 //
 // The atomic unit of VOXEMBLY is the Thoughtform: a typed, versioned,
 // executable object produced from a single dictation. Everything else
 // (the Cognitive Twin graph, the VCS, the agent fleet) operates on it.
 // ============================================================================
+
+/* ─────────────────────────── AssemblyAI Sync STT ─────────────────────────── */
+
+/** Region routing for the Dictation / Sync STT endpoint. */
+export type SyncRegion = "us" | "eu" | "global";
+
+/** A per-word confidence pair as returned by the Dictation API. */
+export interface SyncWord {
+  text: string;
+  confidence: number; // 0..1
+  start?: number; // ms, optional
+  end?: number; // ms, optional
+}
+
+/**
+ * The normalized transcript returned by the DictationClient adapter — mapped
+ * from the raw AssemblyAI Sync response so beta drift only touches one file.
+ */
+export interface SyncTranscript {
+  text: string;
+  words: SyncWord[];
+  confidence: number; // overall 0..1
+  audio_duration_ms: number;
+  session_id: string;
+  request_time_ms: number; // server-side processing time from AAI
+  language_code: string | null;
+}
+
+/**
+ * The full trace attached to a Thoughtform — everything auditable about how the
+ * dictation was captured, sent, and transcribed. Powers the Latency Dial,
+ * Confidence Heatmap and the trace sheet.
+ */
+export interface DictationTrace {
+  region: SyncRegion;
+  endpoint: string;
+  model: string;
+  session_id: string;
+  request_time_ms: number | null; // AAI server-side time
+  client_roundtrip_ms: number; // key-up → response, measured client-side
+  proxy_roundtrip_ms: number | null; // our route handler round-trip
+  audio_duration_ms: number;
+  audio_bytes: number;
+  audio_format: string;
+  prompt: string;
+  keyterms_prompt: string[];
+  language_code: string | null;
+  conversation_context: string[];
+  timestamps: boolean;
+  warmed: boolean;
+  route: "sync" | "prerecorded" | "simulated";
+  retries: number;
+  simulated?: boolean;
+}
+
+/* ─────────────────────────── Cognition types ─────────────────────────── */
 
 /** The nine typed intents the Intent Kernel classifies a Thoughtform into. */
 export type Intent =
@@ -31,7 +87,7 @@ export const INTENTS: Intent[] = [
 ];
 
 /** Node kinds in the Cognitive Twin temporal knowledge graph. */
-export type NodeKind =
+export type NodeType =
   | "Entity"
   | "Person"
   | "Project"
@@ -43,78 +99,73 @@ export type NodeKind =
   | "Emotion"
   | "Memory";
 
-/** Typed micro-agents dispatched by the Intent Kernel. */
+/** Typed micro-agents dispatched by the Intent Kernel (snake_case ids). */
 export type AgentKind =
-  | "Researcher"
-  | "Executor"
-  | "DevilsAdvocate"
-  | "Historian"
-  | "Scheduler"
-  | "EmotionCurator";
+  | "researcher"
+  | "executor"
+  | "devils_advocate"
+  | "historian"
+  | "scheduler"
+  | "emotion_curator";
 
 export const ALL_AGENTS: AgentKind[] = [
-  "Researcher",
-  "Executor",
-  "DevilsAdvocate",
-  "Historian",
-  "Scheduler",
-  "EmotionCurator",
+  "researcher",
+  "executor",
+  "devils_advocate",
+  "historian",
+  "scheduler",
+  "emotion_curator",
 ];
 
-/** A per-word confidence pair as returned by the Dictation API. */
-export interface Word {
-  text: string;
-  confidence: number; // 0..1
-  start?: number; // ms, optional
-  end?: number; // ms, optional
+/** A named entity mentioned in the utterance. */
+export interface Entity {
+  name: string;
+  type: NodeType;
 }
 
-/**
- * The response shape after the transcribe round-trip is normalized by the
- * DictationClient adapter. Field names are mapped from the raw AssemblyAI
- * Sync response so beta drift only touches one file.
- */
-export interface TranscribeResponse {
-  text: string;
-  words: Word[];
-  confidence: number; // overall 0..1
-  audio_duration_ms: number;
-  session_id: string;
-  request_time_ms: number; // server-side processing time from AAI
-  language_code?: string;
-  region: AaiRegion;
-  endpoint: string;
-  /** true when the demo/simulation path produced this (no API key). */
-  simulated?: boolean;
+/** Sentiment / valence analysis. */
+export interface Sentiment {
+  valence: number; // -1..1
+  label: "positive" | "neutral" | "negative";
 }
 
-export type AaiRegion = "us" | "eu" | "global";
+/** An extracted action (Executor / Scheduler input). */
+export interface ThoughtAction {
+  kind: "calendar" | "reminder" | "message" | "pr_draft" | "note" | "search";
+  title: string;
+  when?: string | null; // ISO string for time-based actions
+  target?: string; // e.g. Slack channel, repo
+  status: "proposed" | "done" | "skipped";
+}
+
+/* ─────────────────────────── Graph (Record-based) ─────────────────────────── */
 
 /** A graph mutation emitted by the compile pass and applied to the Twin. */
 export interface GraphMutation {
   op: "add_node" | "add_edge" | "update_node";
   // node ops
-  nodeId?: string;
-  kind?: NodeKind;
+  id?: string;
+  type?: NodeType;
   label?: string;
+  description?: string;
   // edge ops
   from?: string;
   to?: string;
-  rel?: string;
-  // temporal semantics (Graphiti-style)
-  valid_from?: number; // epoch ms
-  valid_to?: number | null;
+  weight?: number;
 }
 
-/** A node in the temporal knowledge graph. */
+/** A node in the temporal knowledge graph (Graphiti-style validity window). */
 export interface GraphNode {
   id: string;
-  kind: NodeKind;
+  type: NodeType;
   label: string;
+  description?: string;
   valid_from: number;
   valid_to: number | null;
-  degree?: number;
-  createdBy?: string; // commit hash that created it
+  degree: number;
+  mentions: number;
+  createdBy: string; // commit hash that created it
+  lastSeen: number;
 }
 
 /** A temporal edge. */
@@ -122,43 +173,77 @@ export interface GraphEdge {
   id: string;
   from: string;
   to: string;
-  rel: string;
+  label: string;
+  weight: number;
   valid_from: number;
   valid_to: number | null;
-  createdBy?: string;
+  createdBy: string;
 }
 
+/** The Cognitive Twin graph — Record-keyed for O(1) mutation. */
 export interface Graph {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
+  nodes: Record<string, GraphNode>;
+  edges: Record<string, GraphEdge>;
 }
 
-/** An extracted action (Executor / Scheduler input). */
-export interface ThoughtAction {
-  kind: "calendar" | "reminder" | "message" | "pr" | "note" | "search";
+/* ─────────────────────────── Agents ─────────────────────────── */
+
+export interface RiskItem {
+  risk: string;
+  severity: "low" | "med" | "high";
+  mitigation: string;
+}
+
+export interface ScheduleItem {
   title: string;
-  when?: string; // ISO string for time-based actions
-  target?: string; // e.g. Slack channel, repo
-  done?: boolean;
+  iso: string;
+  human: string;
 }
 
-/** A named entity mentioned in the utterance. */
-export interface Entity {
-  name: string;
-  kind: NodeKind;
+export interface Citation {
+  title: string;
+  url: string;
 }
 
-/** The output of a single agent run. */
+/** The structured output a single agent produces. */
+export interface AgentOutput {
+  headline: string;
+  bullets: string[];
+  citations?: Citation[];
+  risk_register?: RiskItem[];
+  schedule?: ScheduleItem[];
+}
+
+export type AgentStatus = "queued" | "running" | "done" | "error" | "paused";
+
+/** The record of a single agent run. */
 export interface AgentRun {
   id: string;
   agent: AgentKind;
   model: string;
-  status: "pending" | "running" | "done" | "error";
-  output?: string;
-  citations?: { title: string; url: string }[];
-  startedAt: number;
-  finishedAt?: number;
-  thoughtformId: string;
+  provider: string;
+  status: AgentStatus;
+  started_at: number;
+  finished_at?: number;
+  latency_ms?: number;
+  output?: AgentOutput;
+  error?: string;
+}
+
+/* ─────────────────────────── Thoughtform ─────────────────────────── */
+
+/** The strict-JSON contract the Groq compile pass returns. */
+export interface CompiledThoughtform {
+  intent: Intent;
+  title: string;
+  polished_text: string;
+  entities: Entity[];
+  actions: ThoughtAction[];
+  suggested_agents: AgentKind[];
+  sentiment: Sentiment;
+  language_detected: string;
+  keyterms_learned: string[];
+  graph_mutations: GraphMutation[];
 }
 
 /**
@@ -168,59 +253,63 @@ export interface AgentRun {
 export interface Thoughtform {
   id: string;
   commit_hash: string;
-  parent_hash: string | null;
-  merge_parents?: string[]; // for merge commits
+  parent_hashes: string[]; // 0 = genesis, 1 = normal, 2 = merge
   branch: string;
+  created_at: number;
 
-  createdAt: number;
-  language_code?: string;
-
-  // transcription
+  // transcription (verbatim)
   raw_text: string;
-  polished_text: string;
-  words: Word[];
+  words: SyncWord[];
   confidence: number;
-  request_time_ms: number;
-  audio_duration_ms: number;
-  session_id: string;
-  region: AaiRegion;
-  simulated?: boolean;
 
-  // cognition
-  intent: Intent;
-  sentiment: number; // -1..1
-  entities: Entity[];
-  actions: ThoughtAction[];
-  graph_mutations: GraphMutation[];
-  spawned_agents: AgentKind[];
+  // cognition (the compiled, polished, typed payload)
+  compiled: CompiledThoughtform;
+
+  // provenance
+  trace: DictationTrace;
+  agent_runs: AgentRun[];
+  compile_ms: number;
+  total_ms: number;
 
   // memory
   embedding?: number[];
+  embedding_model?: string;
 
-  // context that produced this (auditable)
-  prompt_used?: string;
-  keyterms_used?: string[];
+  // lifecycle
+  published?: boolean;
 }
+
+/* ─────────────────────────── VCS ─────────────────────────── */
 
 /** A branch ref in the VCS. */
 export interface Branch {
   name: string;
   head: string | null; // commit hash
-  createdAt: number;
-  createdFrom?: string | null;
+  created_at: number;
+  parent_branch?: string | null;
+  forked_from?: string | null;
+  color: string;
 }
+
+/* ─────────────────────────── Profile / domains ─────────────────────────── */
+
+export type LatencyMode = "min_latency" | "balanced" | "max_accuracy";
 
 /** The user profile / onboarding output. */
 export interface Profile {
   id: string;
-  displayName: string;
-  primaryLanguage: string;
-  secondaryLanguages: string[];
+  display_name: string;
+  primary_language: string;
+  secondary_languages: string[];
   domains: string[]; // domain ids
-  region: AaiRegion;
-  latencyMode: "min_latency" | "balanced" | "max_accuracy";
-  ambientDefault: boolean;
-  onboarded: boolean;
+  region: SyncRegion;
+  latency_mode: LatencyMode;
+  normalize_to: string | null; // normalize code-switched output to this language
+  locale_pack: "none" | "keigo" | "usted" | "devanagari";
+  private_acronyms: string[];
+  onboarded_at: number | null;
+  high_contrast: boolean;
+  reduce_motion: boolean;
 }
 
 /** A Life Domain preset (keyterms + base prompt). */
@@ -228,36 +317,66 @@ export interface Domain {
   id: string;
   label: string;
   icon: string;
-  basePrompt: string;
+  base_prompt: string;
   keyterms: string[];
+}
+
+/** A supported dictation language. */
+export interface Language {
+  code: string;
+  label: string;
+}
+
+/** The 18-language matrix Universal-3.5 Pro supports. */
+export const LANGUAGES: Language[] = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "pt", label: "Portuguese" },
+  { code: "nl", label: "Dutch" },
+  { code: "hi", label: "Hindi" },
+  { code: "ja", label: "Japanese" },
+  { code: "zh", label: "Chinese" },
+  { code: "ko", label: "Korean" },
+  { code: "ru", label: "Russian" },
+  { code: "tr", label: "Turkish" },
+  { code: "pl", label: "Polish" },
+  { code: "uk", label: "Ukrainian" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "id", label: "Indonesian" },
+  { code: "fi", label: "Finnish" },
+];
+
+/* ─────────────────────────── Compose / publish / DMR ─────────────────────────── */
+
+/** The dictation config sent to the Sync STT endpoint. */
+export interface DictationConfig {
+  prompt: string;
+  keyterms_prompt: string[];
+  language_code: string | null;
+  timestamps?: boolean;
+}
+
+/** A composed dictation context (prompt + keyterms) plus telemetry stats. */
+export interface ComposedContext {
+  config: DictationConfig;
+  stats: {
+    prompt_words: number;
+    keyterms: number;
+    keyterms_chars: number;
+    context_turns: number;
+  };
 }
 
 /** A published (public) Thoughtform artifact. */
 export interface PublishedThoughtform {
   hash: string;
   thoughtform: Thoughtform;
-  agentRuns: AgentRun[];
-  graphSnapshot: Graph;
-  publishedAt: number;
+  snapshot: Graph;
   author: string;
-}
-
-/** The strict-JSON contract returned by the Groq compile pass. */
-export interface CompileResult {
-  intent: Intent;
-  polished_text: string;
-  sentiment: number;
-  entities: Entity[];
-  actions: ThoughtAction[];
-  graph_mutations: GraphMutation[];
-  spawned_agents: AgentKind[];
-}
-
-/** A composed dictation context (prompt + keyterms) from the Prompt Composer. */
-export interface ComposedContext {
-  prompt: string;
-  keyterms_prompt: string[];
-  language_code?: string;
+  published_at: number;
 }
 
 /** A single DMR (Deep Memory Retrieval) probe result. */

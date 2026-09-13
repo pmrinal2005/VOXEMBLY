@@ -2,72 +2,89 @@
 // VOXEMBLY — Version-Control System for cognition.
 //
 // Every Thoughtform is a commit with a content-addressed hash and parent
-// pointer(s). This module provides Git-style primitives: commit, branch, fork,
-// merge, checkout, and the ref-graph the Timeline renders.
+// pointer(s). This module provides Git-style primitives: commit hashing,
+// branch/fork/merge helpers, ancestry walks, and the merge base used by the
+// three-way merge. Branches are keyed by name in a Record for O(1) lookup.
 // ============================================================================
 
 import type { Branch, Thoughtform } from "@/lib/types";
-import { sha256Hex, uid } from "@/lib/utils";
+import { sha256Hex } from "@/lib/utils";
 
 export const MAIN_BRANCH = "main";
 
+/** Distinct, high-contrast branch colors used by the Timeline. */
+export const BRANCH_COLORS = [
+  "#22d3ee", // cyan — main
+  "#a78bfa", // violet
+  "#34d399", // emerald
+  "#fbbf24", // amber
+  "#fb7185", // rose
+  "#60a5fa", // blue
+  "#f472b6", // pink
+  "#f59e0b", // orange
+];
+
+/** The genesis `main` branch. */
+export function mainBranch(now = Date.now()): Branch {
+  return {
+    name: MAIN_BRANCH,
+    head: null,
+    created_at: now,
+    parent_branch: null,
+    forked_from: null,
+    color: BRANCH_COLORS[0],
+  };
+}
+
+/** The fields that content-address a commit. */
+export interface CommitInput {
+  parent_hashes: string[];
+  branch: string;
+  created_at: number;
+  raw_text: string;
+  polished_text: string;
+  intent: string;
+  session_id: string;
+}
+
 /**
- * Compute a content-addressed commit hash from the Thoughtform payload +
- * parent(s). Deterministic — same content & parent ⇒ same hash prefix.
+ * Compute a content-addressed commit hash. Deterministic in its inputs so the
+ * same content on the same parents yields the same hash — the `session_id`
+ * makes distinct live dictations distinct even when text collides.
  */
-export async function computeCommitHash(
-  tf: Pick<Thoughtform, "polished_text" | "intent" | "createdAt">,
-  parent: string | null,
-  mergeParents?: string[],
-): Promise<string> {
+export async function computeCommitHash(input: CommitInput): Promise<string> {
   const payload = JSON.stringify({
-    p: tf.polished_text,
-    i: tf.intent,
-    t: tf.createdAt,
-    parent,
-    mp: mergeParents || [],
-    salt: uid(),
+    pp: [...input.parent_hashes].sort(),
+    b: input.branch,
+    t: input.created_at,
+    r: input.raw_text,
+    p: input.polished_text,
+    i: input.intent,
+    s: input.session_id,
   });
-  return sha256Hex(payload);
+  const hex = await sha256Hex(payload);
+  return hex.slice(0, 12);
 }
 
-export function initialBranches(now = Date.now()): Branch[] {
-  return [{ name: MAIN_BRANCH, head: null, createdAt: now, createdFrom: null }];
-}
-
-/** Find a branch by name. */
-export function findBranch(branches: Branch[], name: string): Branch | undefined {
-  return branches.find((b) => b.name === name);
-}
-
-/** Advance a branch head to a new commit (returns new branches array). */
-export function advanceHead(
-  branches: Branch[],
-  branchName: string,
-  head: string,
-): Branch[] {
-  return branches.map((b) => (b.name === branchName ? { ...b, head } : b));
-}
-
-/** Create a new branch off a given commit (fork). */
+/** Create a new branch record forked off a given commit. */
 export function createBranch(
-  branches: Branch[],
   name: string,
   fromCommit: string | null,
+  colorIdx: number,
   now = Date.now(),
-): Branch[] {
-  if (findBranch(branches, name)) return branches;
-  return [
-    ...branches,
-    { name, head: fromCommit, createdAt: now, createdFrom: fromCommit },
-  ];
+): Branch {
+  return {
+    name,
+    head: fromCommit,
+    created_at: now,
+    parent_branch: MAIN_BRANCH,
+    forked_from: fromCommit,
+    color: BRANCH_COLORS[colorIdx % BRANCH_COLORS.length],
+  };
 }
 
-/** Walk the parent chain of a commit within a set of thoughtforms. */
-export function ancestry(
-  thoughtforms: Thoughtform[],
-  headHash: string | null,
-): Thoughtform[] {
+/** Walk the parent chain of a commit within a set of thoughtforms (first parent). */
+export function ancestry(thoughtforms: Thoughtform[], headHash: string | null): Thoughtform[] {
   const byHash = new Map(thoughtforms.map((t) => [t.commit_hash, t]));
   const chain: Thoughtform[] = [];
   let cur = headHash;
@@ -76,52 +93,21 @@ export function ancestry(
     guard.add(cur);
     const tf = byHash.get(cur)!;
     chain.push(tf);
-    cur = tf.parent_hash;
+    cur = tf.parent_hashes[0] ?? null;
   }
   return chain;
 }
 
-/** Find lowest common ancestor of two commits (three-way merge base). */
-export function mergeBase(
-  thoughtforms: Thoughtform[],
-  a: string | null,
-  b: string | null,
-): string | null {
+/** Find the lowest common ancestor of two commits (three-way merge base). */
+export function mergeBase(thoughtforms: Thoughtform[], a: string | null, b: string | null): string | null {
   const aChain = new Set(ancestry(thoughtforms, a).map((t) => t.commit_hash));
-  let cur = b;
   const byHash = new Map(thoughtforms.map((t) => [t.commit_hash, t]));
+  let cur = b;
   const guard = new Set<string>();
   while (cur && byHash.has(cur) && !guard.has(cur)) {
     if (aChain.has(cur)) return cur;
     guard.add(cur);
-    cur = byHash.get(cur)!.parent_hash;
+    cur = byHash.get(cur)!.parent_hashes[0] ?? null;
   }
   return null;
-}
-
-/** Timeline ref-graph rows for rendering (commit → lane assignment). */
-export interface TimelineRow {
-  tf: Thoughtform;
-  lane: number;
-  isMerge: boolean;
-  isBranchTip: boolean;
-}
-
-export function buildTimeline(
-  thoughtforms: Thoughtform[],
-  branches: Branch[],
-): TimelineRow[] {
-  const branchNames = branches.map((b) => b.name);
-  const laneOf = new Map<string, number>();
-  branchNames.forEach((n, i) => laneOf.set(n, i));
-  const tips = new Set(branches.map((b) => b.head).filter(Boolean) as string[]);
-
-  return [...thoughtforms]
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .map((tf) => ({
-      tf,
-      lane: laneOf.get(tf.branch) ?? 0,
-      isMerge: Boolean(tf.merge_parents && tf.merge_parents.length),
-      isBranchTip: tips.has(tf.commit_hash),
-    }));
 }
