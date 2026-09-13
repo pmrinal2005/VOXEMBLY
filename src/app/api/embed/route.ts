@@ -1,52 +1,19 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { embed } from "@/lib/kernel/embeddings";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-// Embeddings endpoint. Uses Jina if configured; otherwise returns a $0
-// deterministic hashed vector so pgvector-style similarity still works in demo.
-function hashedVector(text: string, dims = 256): number[] {
-  const v = new Array(dims).fill(0);
-  const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
-  for (const tok of tokens) {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < tok.length; i++) {
-      h ^= tok.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    v[h % dims] += 1;
+/** Embed text into a vector for semantic memory retrieval. */
+export async function POST(req: NextRequest) {
+  let body: { text?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
-  const norm = Math.sqrt(v.reduce((a, b) => a + b * b, 0)) || 1;
-  return v.map((x) => x / norm);
-}
-
-export async function POST(req: Request) {
-  const { text } = (await req.json().catch(() => ({}))) as { text?: string };
+  const text = (body.text || "").trim();
   if (!text) return NextResponse.json({ error: "missing text" }, { status: 400 });
-
-  const jina = process.env.JINA_API_KEY;
-  if (jina) {
-    try {
-      const res = await fetch("https://api.jina.ai/v1/embeddings", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${jina}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "jina-embeddings-v4",
-          input: [text],
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { data?: { embedding: number[] }[] };
-        const embedding = data.data?.[0]?.embedding;
-        if (embedding) return NextResponse.json({ embedding, provider: "jina" });
-      }
-    } catch {
-      /* fall through to local */
-    }
-  }
-
-  return NextResponse.json({ embedding: hashedVector(text), provider: "local-hash" });
+  const { vector, source } = await embed(text);
+  return NextResponse.json({ vector, source, dim: vector.length });
 }

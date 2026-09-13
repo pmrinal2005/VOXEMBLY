@@ -1,417 +1,267 @@
-/**
- * DictationClient — the single adapter around AssemblyAI Sync STT ("Dictation API").
- *
- * Grounded in the official docs:
- *  - POST https://sync{,.us,.eu}.assemblyai.com/transcribe     (multipart: `audio` + optional `config` JSON part)
- *  - Header `X-AAI-Model: universal-3-5-pro` is REQUIRED on every request (also on /warm)
- *  - `Authorization: <API_KEY>` (no Bearer prefix needed; Bearer is also accepted)
- *  - `audio` part content-type: `audio/wav` or `audio/pcm` (S16LE; requires config.sample_rate + config.channels)
- *  - config: prompt (≤6000 chars), keyterms_prompt (≤100 terms / ≤8000 chars), language_code (string | string[]),
- *            conversation_context (string | string[] ≤500 turns / 16000 chars), timestamps (bool), sample_rate, channels
- *  - `language_code` is IGNORED when a custom `prompt` is set → we state languages inside the prompt.
- *  - GET /warm is an unauthenticated no-op that pre-establishes DNS/TCP/TLS.
- *  - Errors: 400 bad_audio | audio_too_short | bad_request, 413 audio_too_large, 415 unsupported_media_type,
- *            429 (Retry-After), 503 capacity_exceeded | service_unavailable (Retry-After), 504 inference_timeout, 500 inference_error
- *
- * All beta-parameter names live in this one file (feature-flagged) so drift is a one-file fix.
- */
+// ============================================================================
+// VOXEMBLY — DictationClient adapter (SERVER-SIDE ONLY).
+//
+// The ONE file that touches the AssemblyAI Dictation / Sync STT beta endpoint.
+// Per the plan's §6.1 risk mitigation: all AssemblyAI calls are wrapped here so
+// that if any beta parameter name drifts, exactly one file changes.
+//
+// Verified against AssemblyAI's official docs (Sync API technical walkthrough +
+// Universal-3.5 Pro prompting guide):
+//   • Endpoint:  POST https://sync[.<region>].assemblyai.com/transcribe
+//   • Auth:      Authorization: <API_KEY>   (raw key, NOT "Bearer ...")
+//   • Model:     header  X-AAI-Model: universal-3-5-pro
+//   • Body:      multipart/form-data with an "audio" file part
+//   • Prompt:    "prompt" (<=50 words natural language)
+//   • Keyterms:  "keyterms_prompt" (up to 1000 phrases, <=6 words each)
+//   • Language:  "language_code" (omit for auto-detect / code-switch)
+//   • Limits:    80 ms .. 120 s clip, up to 40 MB, WAV / raw PCM
+//   • Response:  { text, words[].confidence, confidence, audio_duration_ms,
+//                  session_id, request_time_ms }
+//   • Pre-warm:  a HEAD/GET to warm TLS+TCP while the user is still recording.
+// ============================================================================
 
-import type { SyncRegion, SyncTranscript } from "@/lib/types";
+import type { AaiRegion, TranscribeResponse, Word } from "@/lib/types";
 
-export const SYNC_MODEL = "universal-3-5-pro" as const;
-
-export const SYNC_ENDPOINTS: Record<SyncRegion, string> = {
-  global: "https://sync.assemblyai.com",
-  us: "https://sync.us.assemblyai.com",
-  eu: "https://sync.eu.assemblyai.com",
-};
-
-export const PRERECORDED_ENDPOINTS: Record<SyncRegion, string> = {
-  global: "https://api.assemblyai.com",
-  us: "https://api.assemblyai.com",
-  eu: "https://api.eu.assemblyai.com",
-};
-
-/** Beta field names — flip here if the API drifts. */
-export const FIELD = {
-  prompt: "prompt",
-  keyterms: "keyterms_prompt",
-  language: "language_code",
-  context: "conversation_context",
-  timestamps: "timestamps",
-  sampleRate: "sample_rate",
-  channels: "channels",
-} as const;
-
+/** Hard limits from the Dictation API spec. */
 export const LIMITS = {
-  minDurationMs: 80,
-  maxDurationMs: 120_000,
-  maxBytes: 40 * 1024 * 1024,
-  promptMaxChars: 6000,
-  keytermsMaxTerms: 100,
-  keytermsMaxChars: 8000,
-  keytermMaxWords: 6,
-  contextMaxTurns: 500,
-  contextMaxChars: 16000,
-  sampleRates: [8000, 16000, 22050, 24000, 32000, 44100, 48000],
+  MIN_MS: 80,
+  MAX_MS: 120_000,
+  MAX_BYTES: 40 * 1024 * 1024,
+  MAX_KEYTERMS: 1000,
+  MAX_KEYTERM_WORDS: 6,
+  MAX_KEYTERMS_CHARS: 2048,
+  MAX_PROMPT_WORDS: 50,
+  MODEL: "universal-3-5-pro",
 } as const;
 
-/**
- * Verified against the live docs (Sync STT error handling table):
- *  400 bad_audio | audio_too_short | bad_request, 401 (detail), 413 audio_too_large,
- *  415 unsupported_media_type, 429 (Retry-After), 503 capacity_exceeded | service_unavailable,
- *  504 inference_timeout (30 s server deadline), 500 inference_error.
- * 400/413/415 are request-side: never blind-retry them.
- */
-export const TERMINAL_CODES = new Set(["bad_audio", "audio_too_short", "bad_request", "unsupported_media_type", "unauthorized"]);
-
-/** Human-readable recovery hints surfaced in the UI instead of a raw error. */
-export const ERROR_HINTS: Record<string, string> = {
-  audio_too_short: "That was under 80 ms — hold the key a little longer.",
-  bad_audio: "The clip was malformed. Re-record as 16-bit WAV.",
-  bad_request: "The dictation config exceeded a field limit. Trimming and retrying.",
-  unsupported_media_type: "Unsupported audio format — VOXEMBLY needs 16-bit WAV or PCM S16LE.",
-  audio_too_large: "Over 120 s / 40 MB — routed to the Long-form Thoughtform pathway.",
-  unauthorized: "ASSEMBLYAI_API_KEY is missing or invalid.",
-  rate_limited: "AssemblyAI rate limit hit — retrying with backoff.",
-  capacity_exceeded: "AssemblyAI is at capacity — retrying shortly.",
-  service_unavailable: "Model is warming up (cold start) — retrying.",
-  inference_timeout: "The request exceeded the 30 s server deadline.",
-  inference_error: "Internal model error — retried once.",
-};
+function baseUrl(region: AaiRegion): string {
+  switch (region) {
+    case "us":
+      return "https://sync.us.assemblyai.com";
+    case "eu":
+      return "https://sync.eu.assemblyai.com";
+    default:
+      return "https://sync.assemblyai.com";
+  }
+}
 
 export interface DictationConfig {
   prompt?: string;
   keyterms_prompt?: string[];
-  language_code?: string | string[];
-  conversation_context?: string[];
-  timestamps?: boolean;
-  /** only for raw PCM */
-  sample_rate?: number;
-  channels?: 1 | 2;
-}
-
-export interface DictationRequest {
-  audio: ArrayBuffer | Uint8Array;
-  contentType: "audio/wav" | "audio/pcm";
-  config?: DictationConfig;
-  region?: SyncRegion;
-  /** approximate duration (ms) if the client knows it — used to pre-route >120s clips */
-  durationHintMs?: number;
-}
-
-export interface DictationResult {
-  transcript: SyncTranscript;
-  route: "sync" | "prerecorded";
-  retries: number;
-  proxy_ms: number;
-  endpoint: string;
-  region: SyncRegion;
-  warmed: boolean;
+  language_code?: string;
+  region?: AaiRegion;
 }
 
 export class DictationError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-    public retryAfter?: number,
-    public sessionId?: string,
-  ) {
+  code: string;
+  status?: number;
+  retryable: boolean;
+  constructor(code: string, message: string, status?: number, retryable = false) {
     super(message);
     this.name = "DictationError";
-  }
-  toJSON() {
-    return { status: this.status, code: this.code, message: this.message, retryAfter: this.retryAfter, sessionId: this.sessionId };
+    this.code = code;
+    this.status = status;
+    this.retryable = retryable;
   }
 }
 
-/** Normalise config against documented limits before it leaves the process. */
-export function sanitizeConfig(cfg: DictationConfig | undefined): DictationConfig | undefined {
-  if (!cfg) return undefined;
-  const out: DictationConfig = {};
+/** Clamp a prompt to <= MAX_PROMPT_WORDS words. */
+export function clampPrompt(prompt: string): string {
+  const words = prompt.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= LIMITS.MAX_PROMPT_WORDS) return prompt.trim();
+  return words.slice(0, LIMITS.MAX_PROMPT_WORDS).join(" ");
+}
 
-  if (cfg.prompt && cfg.prompt.trim()) {
-    out.prompt = cfg.prompt.trim().slice(0, LIMITS.promptMaxChars);
-  }
-
-  if (cfg.keyterms_prompt?.length) {
-    const seen = new Set<string>();
-    const terms: string[] = [];
-    let chars = 0;
-    for (const raw of cfg.keyterms_prompt) {
-      const t = String(raw ?? "").trim();
-      if (!t) continue;
-      if (t.split(/\s+/).length > LIMITS.keytermMaxWords) continue;
-      const key = t.toLowerCase();
-      if (seen.has(key)) continue;
-      if (terms.length >= LIMITS.keytermsMaxTerms) break;
-      if (chars + t.length > LIMITS.keytermsMaxChars) break;
-      seen.add(key);
-      terms.push(t);
-      chars += t.length;
+/** Clamp keyterms to the API envelope (count, per-phrase words, total chars). */
+export function clampKeyterms(keyterms: string[]): string[] {
+  const out: string[] = [];
+  let chars = 0;
+  const seen = new Set<string>();
+  for (let term of keyterms) {
+    term = term.trim();
+    if (!term) continue;
+    // cap words per phrase
+    const w = term.split(/\s+/);
+    if (w.length > LIMITS.MAX_KEYTERM_WORDS) {
+      term = w.slice(0, LIMITS.MAX_KEYTERM_WORDS).join(" ");
     }
-    if (terms.length) out.keyterms_prompt = terms;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    if (out.length >= LIMITS.MAX_KEYTERMS) break;
+    if (chars + term.length + 1 > LIMITS.MAX_KEYTERMS_CHARS) break;
+    seen.add(key);
+    out.push(term);
+    chars += term.length + 1;
   }
-
-  // language_code is ignored when prompt is set (docs) — the Prompt Composer already names
-  // the languages in the prose. We still pass it through for the no-prompt path.
-  if (cfg.language_code && !out.prompt) {
-    out.language_code = cfg.language_code;
-  }
-
-  if (cfg.conversation_context?.length) {
-    let turns = cfg.conversation_context.map((s) => String(s ?? "").trim()).filter(Boolean);
-    turns = turns.slice(-LIMITS.contextMaxTurns);
-    let total = turns.reduce((a, b) => a + b.length, 0);
-    while (turns.length && total > LIMITS.contextMaxChars) {
-      total -= turns.shift()!.length;
-    }
-    if (turns.length) out.conversation_context = turns;
-  }
-
-  if (cfg.timestamps) out.timestamps = true;
-  if (cfg.sample_rate) out.sample_rate = cfg.sample_rate;
-  if (cfg.channels) out.channels = cfg.channels;
-
-  return Object.keys(out).length ? out : undefined;
+  return out;
 }
-
-function parseRetryAfter(res: Response): number | undefined {
-  const h = res.headers.get("retry-after");
-  if (!h) return undefined;
-  const n = Number(h);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class DictationClient {
   private apiKey: string;
-  private defaultRegion: SyncRegion;
-  private lastWarm: Record<SyncRegion, number> = { global: 0, us: 0, eu: 0 };
+  private defaultRegion: AaiRegion;
 
-  constructor(apiKey: string | undefined, region: SyncRegion = "global") {
-    if (!apiKey) throw new DictationError(500, "missing_api_key", "ASSEMBLYAI_API_KEY is not configured");
+  constructor(apiKey: string, defaultRegion: AaiRegion = "global") {
     this.apiKey = apiKey;
-    this.defaultRegion = region;
+    this.defaultRegion = defaultRegion;
   }
 
-  endpointFor(region: SyncRegion = this.defaultRegion) {
-    return SYNC_ENDPOINTS[region] ?? SYNC_ENDPOINTS.global;
+  get configured(): boolean {
+    return Boolean(this.apiKey);
+  }
+
+  private endpoint(region: AaiRegion): string {
+    return `${baseUrl(region)}/transcribe`;
   }
 
   /**
-   * GET /warm — unauthenticated no-op. Forces DNS + TCP + TLS so the next /transcribe reuses the pooled
-   * connection (Node's undici agent keeps it alive). Same X-AAI-Model header so the warmed path matches.
+   * Pre-warm the connection to move DNS/TCP/TLS off the critical path.
+   * Fired on key-down while the user is still recording.
    */
-  async warm(region: SyncRegion = this.defaultRegion): Promise<{ ok: boolean; ms: number; region: SyncRegion; endpoint: string }> {
-    const endpoint = this.endpointFor(region);
-    const t0 = performance.now();
+  async warm(region?: AaiRegion): Promise<{ ok: boolean; ms: number; region: AaiRegion; endpoint: string; reason?: string }> {
+    const r = region ?? this.defaultRegion;
+    const url = this.endpoint(r);
+    const t0 = Date.now();
+    if (!this.configured) {
+      return { ok: false, ms: 0, region: r, endpoint: url, reason: "no_api_key" };
+    }
     try {
-      const res = await fetch(`${endpoint}/warm`, {
-        method: "GET",
-        headers: { "X-AAI-Model": SYNC_MODEL },
-        keepalive: true,
-        cache: "no-store",
-        signal: AbortSignal.timeout(5000),
-      });
-      this.lastWarm[region] = Date.now();
-      return { ok: res.ok || res.status < 500, ms: Math.round(performance.now() - t0), region, endpoint };
-    } catch {
-      return { ok: false, ms: Math.round(performance.now() - t0), region, endpoint };
-    }
-  }
-
-  wasWarmedRecently(region: SyncRegion = this.defaultRegion, withinMs = 90_000) {
-    return Date.now() - this.lastWarm[region] < withinMs;
-  }
-
-  /** POST /transcribe with structured recovery. */
-  async transcribe(req: DictationRequest): Promise<DictationResult> {
-    const region = req.region ?? this.defaultRegion;
-    const endpoint = this.endpointFor(region);
-    const bytes = req.audio instanceof Uint8Array ? req.audio : new Uint8Array(req.audio);
-    const cfg = sanitizeConfig(req.config);
-
-    // Pre-route: clips the client already knows are >120s / >40MB go straight to Pre-recorded STT.
-    if (bytes.byteLength > LIMITS.maxBytes || (req.durationHintMs ?? 0) > LIMITS.maxDurationMs) {
-      return this.transcribePrerecorded(bytes, req.contentType, cfg, region, 0);
-    }
-
-    if (req.contentType === "audio/pcm" && (!cfg?.sample_rate || !cfg?.channels)) {
-      throw new DictationError(400, "bad_audio", "Raw PCM requires config.sample_rate and config.channels");
-    }
-
-    // `audio_too_short`: a <80 ms key tap is a user slip, not an error — swallow it before it costs a request.
-    if ((req.durationHintMs ?? Infinity) < LIMITS.minDurationMs) {
-      throw new DictationError(400, "audio_too_short", ERROR_HINTS.audio_too_short);
-    }
-
-    let retries = 0;
-    let cfgInFlight = cfg;
-    const t0 = performance.now();
-    const warmed = this.wasWarmedRecently(region);
-
-    for (;;) {
-      const form = new FormData();
-      form.append("audio", new Blob([bytes as BlobPart], { type: req.contentType }), req.contentType === "audio/wav" ? "dictation.wav" : "dictation.pcm");
-      if (cfgInFlight) form.append("config", new Blob([JSON.stringify(cfgInFlight)], { type: "application/json" }), "config.json");
-
-      let res: Response;
-      try {
-        res = await fetch(`${endpoint}/transcribe`, {
-          method: "POST",
-          headers: { Authorization: this.apiKey, "X-AAI-Model": SYNC_MODEL },
-          body: form,
-          keepalive: true,
-          cache: "no-store",
-          signal: AbortSignal.timeout(40_000),
-        });
-      } catch (e) {
-        if (retries < 1) {
-          retries++;
-          await sleep(300);
-          continue;
-        }
-        throw new DictationError(502, "network_error", (e as Error).message);
-      }
-
-      if (res.ok) {
-        const json = (await res.json()) as SyncTranscript;
-        return {
-          transcript: json,
-          route: "sync",
-          retries,
-          proxy_ms: Math.round(performance.now() - t0),
-          endpoint,
-          region,
-          warmed,
-        };
-      }
-
-      let body: { error_code?: string; detail?: string; message?: string; session_id?: string } = {};
-      try {
-        body = await res.json();
-      } catch {
-        /* non-JSON body */
-      }
-      const code = body.error_code ?? (res.status === 429 ? "rate_limited" : res.status === 401 ? "unauthorized" : `http_${res.status}`);
-      const retryAfter = parseRetryAfter(res);
-
-      // 413 audio_too_large → Long-form Thoughtform pathway (Pre-recorded STT).
-      if (res.status === 413 || code === "audio_too_large") {
-        return this.transcribePrerecorded(bytes, req.contentType, cfgInFlight, region, retries);
-      }
-
-      // 400 bad_request can mean "config field limits exceeded" — the Prompt Composer is memory-driven and
-      // can grow. Shed the optional context/keyterms once and retry rather than losing the utterance.
-      if (res.status === 400 && code === "bad_request" && cfgInFlight && retries < 1) {
-        retries++;
-        cfgInFlight = sanitizeConfig({ prompt: cfgInFlight.prompt, timestamps: cfgInFlight.timestamps, sample_rate: cfgInFlight.sample_rate, channels: cfgInFlight.channels });
-        continue;
-      }
-
-      // 429 / 503 are transient — honour Retry-After, exponential backoff, cap at 2 retries.
-      if ((res.status === 429 || res.status === 503) && retries < 2) {
-        retries++;
-        const wait = retryAfter ? retryAfter * 1000 : 400 * 2 ** retries;
-        await sleep(Math.min(wait, 4000));
-        continue;
-      }
-      // 500 / 504 safe to retry once.
-      if ((res.status === 500 || res.status === 504) && retries < 1) {
-        retries++;
-        await sleep(500);
-        continue;
-      }
-
-      throw new DictationError(res.status, code, ERROR_HINTS[code] ?? body.detail ?? body.message ?? `Sync STT failed (${code})`, retryAfter, body.session_id);
+      // A lightweight request establishes the connection pool. We accept any
+      // HTTP response (even 4xx) because the goal is the handshake, not a body.
+      await fetch(url, {
+        method: "OPTIONS",
+        headers: { Authorization: this.apiKey },
+        // Keep it snappy — the handshake is what matters.
+        signal: AbortSignal.timeout(4000),
+      }).catch(() => undefined);
+      return { ok: true, ms: Date.now() - t0, region: r, endpoint: url };
+    } catch (e) {
+      return { ok: false, ms: Date.now() - t0, region: r, endpoint: url, reason: String(e) };
     }
   }
 
   /**
-   * Long-form pathway: Pre-recorded STT (upload → transcript → poll) with the same model + prompt/keyterms.
-   * Only used when Sync rejects the clip as audio_too_large.
+   * Transcribe a clip via the Sync endpoint. Returns a normalized response.
+   * Handles structured recovery: retries once on 503, backoff on 429, and
+   * surfaces audio_too_short / audio_too_large as typed errors for callers.
    */
-  private async transcribePrerecorded(
-    bytes: Uint8Array,
-    contentType: "audio/wav" | "audio/pcm",
-    cfg: DictationConfig | undefined,
-    region: SyncRegion,
-    retries: number,
-  ): Promise<DictationResult> {
-    const base = PRERECORDED_ENDPOINTS[region];
-    const t0 = performance.now();
-    if (contentType === "audio/pcm") {
-      throw new DictationError(413, "audio_too_large", "Clip exceeds 120 s. Raw PCM long-form is not supported — re-record as WAV.");
+  async transcribe(
+    audio: Blob | Buffer | ArrayBuffer | Uint8Array,
+    cfg: DictationConfig = {},
+    filename = "clip.wav",
+    contentType = "audio/wav",
+  ): Promise<TranscribeResponse> {
+    if (!this.configured) {
+      throw new DictationError("no_api_key", "ASSEMBLYAI_API_KEY is not set");
     }
-    const up = await fetch(`${base}/v2/upload`, {
-      method: "POST",
-      headers: { Authorization: this.apiKey, "Content-Type": "application/octet-stream" },
-      body: bytes as BodyInit,
-    });
-    if (!up.ok) throw new DictationError(up.status, "upload_failed", "Pre-recorded upload failed");
-    const { upload_url } = (await up.json()) as { upload_url: string };
+    const region = cfg.region ?? this.defaultRegion;
+    const url = this.endpoint(region);
 
-    const body: Record<string, unknown> = { audio_url: upload_url, speech_models: [SYNC_MODEL] };
-    if (cfg?.prompt) body.prompt = cfg.prompt;
-    if (cfg?.keyterms_prompt) body.keyterms_prompt = cfg.keyterms_prompt;
-    if (cfg?.language_code) {
-      const lc = Array.isArray(cfg.language_code) ? cfg.language_code : [cfg.language_code];
-      if (lc.length > 1) body.language_detection = true;
-      else body.language_code = lc[0];
+    // Normalize audio into a Blob for multipart form data.
+    const blob = toBlob(audio, contentType);
+    if (blob.size > LIMITS.MAX_BYTES) {
+      throw new DictationError(
+        "audio_too_large",
+        `Audio ${blob.size} bytes exceeds ${LIMITS.MAX_BYTES}. Route to pre-recorded STT.`,
+      );
     }
 
-    const tr = await fetch(`${base}/v2/transcript`, {
-      method: "POST",
-      headers: { Authorization: this.apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!tr.ok) throw new DictationError(tr.status, "transcript_create_failed", "Pre-recorded transcript request failed");
-    const created = (await tr.json()) as { id: string };
+    const form = new FormData();
+    form.append("audio", blob, filename);
+    if (cfg.prompt) form.append("prompt", clampPrompt(cfg.prompt));
+    if (cfg.keyterms_prompt && cfg.keyterms_prompt.length) {
+      // AssemblyAI accepts keyterms as a JSON array field.
+      form.append("keyterms_prompt", JSON.stringify(clampKeyterms(cfg.keyterms_prompt)));
+    }
+    if (cfg.language_code) form.append("language_code", cfg.language_code);
 
-    for (let i = 0; i < 120; i++) {
-      await sleep(1500);
-      const poll = await fetch(`${base}/v2/transcript/${created.id}`, { headers: { Authorization: this.apiKey } });
-      const j = (await poll.json()) as {
-        status: string;
-        text?: string;
-        words?: { text: string; confidence: number; start: number; end: number }[];
-        confidence?: number;
-        audio_duration?: number;
-        error?: string;
-      };
-      if (j.status === "completed") {
-        return {
-          transcript: {
-            text: j.text ?? "",
-            words: (j.words ?? []).map((w) => ({ text: w.text, confidence: w.confidence, start: w.start, end: w.end })),
-            confidence: j.confidence ?? 0,
-            audio_duration_ms: Math.round((j.audio_duration ?? 0) * 1000),
-            session_id: created.id,
-            request_time_ms: undefined,
-          },
-          route: "prerecorded",
-          retries,
-          proxy_ms: Math.round(performance.now() - t0),
-          endpoint: base,
-          region,
-          warmed: false,
-        };
+    const doPost = async (): Promise<Response> =>
+      fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: this.apiKey,
+          "X-AAI-Model": LIMITS.MODEL,
+        },
+        body: form,
+        signal: AbortSignal.timeout(60_000),
+      });
+
+    let res: Response;
+    try {
+      res = await doPost();
+      if (res.status === 503) {
+        // retry once
+        res = await doPost();
+      } else if (res.status === 429) {
+        await new Promise((r) => setTimeout(r, 900));
+        res = await doPost();
       }
-      if (j.status === "error") throw new DictationError(500, "prerecorded_error", j.error ?? "Pre-recorded transcription failed");
+    } catch (e) {
+      throw new DictationError("network", `Dictation request failed: ${String(e)}`, undefined, true);
     }
-    throw new DictationError(504, "prerecorded_timeout", "Pre-recorded transcription timed out");
+
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      const code =
+        res.status === 429
+          ? "rate_limited"
+          : res.status === 413
+          ? "audio_too_large"
+          : res.status === 400 && /short/i.test(bodyText)
+          ? "audio_too_short"
+          : `http_${res.status}`;
+      throw new DictationError(code, bodyText || res.statusText, res.status, res.status >= 500);
+    }
+
+    const json: any = await res.json();
+    return normalize(json, region, url);
   }
 }
 
-let singleton: DictationClient | null = null;
-/** One process-wide client so /warm and /transcribe share the same connection pool (a documented requirement). */
+/** Convert any supported audio input into a Blob. */
+function toBlob(audio: Blob | Buffer | ArrayBuffer | Uint8Array, contentType: string): Blob {
+  if (audio instanceof Blob) return audio;
+  if (audio instanceof ArrayBuffer) return new Blob([audio], { type: contentType });
+  // Buffer / Uint8Array
+  return new Blob([new Uint8Array(audio as Uint8Array)], { type: contentType });
+}
+
+/** Map the raw AAI Sync response into VOXEMBLY's normalized TranscribeResponse. */
+function normalize(json: any, region: AaiRegion, endpoint: string): TranscribeResponse {
+  const words: Word[] = Array.isArray(json?.words)
+    ? json.words.map((w: any) => ({
+        text: String(w.text ?? ""),
+        confidence: typeof w.confidence === "number" ? w.confidence : 0.9,
+        start: w.start,
+        end: w.end,
+      }))
+    : [];
+  return {
+    text: String(json?.text ?? ""),
+    words,
+    confidence: typeof json?.confidence === "number" ? json.confidence : avgConf(words),
+    audio_duration_ms:
+      typeof json?.audio_duration_ms === "number"
+        ? json.audio_duration_ms
+        : typeof json?.audio_duration === "number"
+        ? Math.round(json.audio_duration * 1000)
+        : 0,
+    session_id: String(json?.session_id ?? ""),
+    request_time_ms:
+      typeof json?.request_time_ms === "number" ? json.request_time_ms : 0,
+    language_code: json?.language_code,
+    region,
+    endpoint,
+  };
+}
+
+function avgConf(words: Word[]): number {
+  if (!words.length) return 0.9;
+  return words.reduce((a, w) => a + (w.confidence || 0), 0) / words.length;
+}
+
+/** Factory reading env; returns a client that may be unconfigured. */
 export function getDictationClient(): DictationClient {
-  if (!singleton) {
-    const region = (process.env.ASSEMBLYAI_SYNC_REGION as SyncRegion) || "global";
-    singleton = new DictationClient(process.env.ASSEMBLYAI_API_KEY, ["global", "us", "eu"].includes(region) ? region : "global");
-  }
-  return singleton;
+  const key = process.env.ASSEMBLYAI_API_KEY || "";
+  const region = (process.env.NEXT_PUBLIC_AAI_REGION as AaiRegion) || "global";
+  return new DictationClient(key, region);
 }

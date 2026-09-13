@@ -1,15 +1,24 @@
 // ============================================================================
-// VOXEMBLY core domain types — the NEW family.
+// VOXEMBLY — Core type system. The single source of truth.
 //
-// A Thoughtform is a typed, versioned, executable "cognitive commit": the atomic
-// operation of the voice-native cognition OS. It carries the verbatim transcript,
-// the compiled (Intent-Kernel) interpretation, the dictation trace (latency/telemetry),
-// and any Agent Council runs — all hashed like a Git commit.
+// The atomic unit of VOXEMBLY is the Thoughtform: a typed, versioned,
+// executable object produced from a single dictation. Everything else
+// (the Cognitive Twin graph, the VCS, the agent fleet) operates on it.
 // ============================================================================
 
-/* ─────────────────────────── enums / vocabularies ─────────────────────────── */
+/** The nine typed intents the Intent Kernel classifies a Thoughtform into. */
+export type Intent =
+  | "note"
+  | "task"
+  | "decision"
+  | "question"
+  | "idea"
+  | "meeting"
+  | "emotion"
+  | "command"
+  | "memory";
 
-export const INTENTS = [
+export const INTENTS: Intent[] = [
   "note",
   "task",
   "decision",
@@ -19,336 +28,242 @@ export const INTENTS = [
   "emotion",
   "command",
   "memory",
-] as const;
-export type Intent = (typeof INTENTS)[number];
-/** Back-compat alias used by some UI code. */
-export type IntentType = Intent;
+];
 
-export const NODE_TYPES = [
-  "Person",
-  "Project",
-  "Concept",
-  "Task",
-  "Decision",
-  "Domain",
-  "Location",
-  "Emotion",
-  "Memory",
-  "Entity",
-] as const;
-export type NodeType = (typeof NODE_TYPES)[number];
-/** Back-compat alias. */
-export type NodeKind = NodeType;
+/** Node kinds in the Cognitive Twin temporal knowledge graph. */
+export type NodeKind =
+  | "Entity"
+  | "Person"
+  | "Project"
+  | "Domain"
+  | "Location"
+  | "Concept"
+  | "Task"
+  | "Decision"
+  | "Emotion"
+  | "Memory";
 
-export const AGENTS = [
-  "researcher",
-  "executor",
-  "devils_advocate",
-  "historian",
-  "scheduler",
-  "emotion_curator",
-] as const;
-export type AgentKind = (typeof AGENTS)[number];
+/** Typed micro-agents dispatched by the Intent Kernel. */
+export type AgentKind =
+  | "Researcher"
+  | "Executor"
+  | "DevilsAdvocate"
+  | "Historian"
+  | "Scheduler"
+  | "EmotionCurator";
 
-export type SyncRegion = "us" | "eu" | "global";
+export const ALL_AGENTS: AgentKind[] = [
+  "Researcher",
+  "Executor",
+  "DevilsAdvocate",
+  "Historian",
+  "Scheduler",
+  "EmotionCurator",
+];
 
-/* ─────────────────────────── AssemblyAI Sync STT ─────────────────────────── */
-
-/** A word from the Sync STT response, with per-word confidence (drives the heatmap). */
-export interface SyncWord {
+/** A per-word confidence pair as returned by the Dictation API. */
+export interface Word {
   text: string;
   confidence: number; // 0..1
-  start?: number; // ms
-  end?: number; // ms
+  start?: number; // ms, optional
+  end?: number; // ms, optional
 }
-/** Back-compat alias. */
-export type WordConfidence = SyncWord;
 
-/** The raw payload we consume from `sync.assemblyai.com/transcribe`. */
-export interface SyncTranscript {
+/**
+ * The response shape after the transcribe round-trip is normalized by the
+ * DictationClient adapter. Field names are mapped from the raw AssemblyAI
+ * Sync response so beta drift only touches one file.
+ */
+export interface TranscribeResponse {
   text: string;
-  words: SyncWord[];
-  confidence: number;
-  audio_duration_ms?: number;
-  session_id?: string;
-  request_time_ms?: number; // drives the Latency Dial
-  language_code?: string;
-}
-/** Back-compat alias. */
-export type DictationResponse = SyncTranscript;
-
-/** Everything we recorded about a single dictation round-trip (telemetry + config echo). */
-export interface DictationTrace {
-  region: SyncRegion;
-  endpoint: string;
-  model: string;
-  session_id: string;
-  request_time_ms: number | null;
-  client_roundtrip_ms: number;
-  proxy_roundtrip_ms: number;
+  words: Word[];
+  confidence: number; // overall 0..1
   audio_duration_ms: number;
-  audio_bytes: number;
-  audio_format: "audio/wav" | "audio/pcm";
-  prompt: string;
-  keyterms_prompt: string[];
-  language_code: string | string[] | null;
-  conversation_context: string[];
-  timestamps: boolean;
-  warmed: boolean;
-  route: "sync" | "prerecorded" | "local";
-  retries: number;
+  session_id: string;
+  request_time_ms: number; // server-side processing time from AAI
+  language_code?: string;
+  region: AaiRegion;
+  endpoint: string;
+  /** true when the demo/simulation path produced this (no API key). */
+  simulated?: boolean;
 }
 
-/* ─────────────────────────── compiled thoughtform ─────────────────────────── */
+export type AaiRegion = "us" | "eu" | "global";
 
-export interface Entity {
-  name: string;
-  type: NodeType;
-  description?: string;
+/** A graph mutation emitted by the compile pass and applied to the Twin. */
+export interface GraphMutation {
+  op: "add_node" | "add_edge" | "update_node";
+  // node ops
+  nodeId?: string;
+  kind?: NodeKind;
+  label?: string;
+  // edge ops
+  from?: string;
+  to?: string;
+  rel?: string;
+  // temporal semantics (Graphiti-style)
+  valid_from?: number; // epoch ms
+  valid_to?: number | null;
 }
 
-export type ActionKind =
-  | "calendar"
-  | "reminder"
-  | "message"
-  | "pr_draft"
-  | "note"
-  | "search"
-  | "other";
-
-export interface ThoughtAction {
-  kind: ActionKind;
-  title: string;
-  when: string | null; // ISO-8601
-  target: string | null;
-  payload: string | null;
-  status: "proposed" | "done" | "dismissed";
-}
-
-/* graph mutations (temporal knowledge-graph ops) */
-export type GraphMutation =
-  | { op: "add_node"; id: string; type: NodeType; label: string; description?: string }
-  | { op: "update_node"; id: string; label?: string; description?: string }
-  | { op: "add_edge"; id: string; from: string; to: string; label: string; weight?: number }
-  | { op: "invalidate_edge"; id: string };
-
-export interface Sentiment {
-  valence: number; // -1..1
-  label: "negative" | "neutral" | "positive";
-}
-/** Back-compat string sentiment alias for old UI. */
-export type SentimentLabel = "positive" | "neutral" | "negative" | "mixed";
-
-export interface VoiceCommandSpec {
-  verb: string;
-  args: string[];
-}
-
-/** The Intent Kernel's structured interpretation of an utterance. */
-export interface CompiledThoughtform {
-  intent: Intent;
-  polished_text: string;
-  title: string;
-  entities: Entity[];
-  actions: ThoughtAction[];
-  graph_mutations: GraphMutation[];
-  suggested_agents: AgentKind[];
-  sentiment: Sentiment;
-  language_detected: string;
-  command: VoiceCommandSpec | null;
-  keyterms_learned: string[];
-}
-
-/* ─────────────────────────── agents ─────────────────────────── */
-
-export interface AgentCitation {
-  title: string;
-  url: string;
-}
-
-export interface RiskItem {
-  risk: string;
-  severity: "low" | "med" | "high";
-  mitigation: string;
-}
-
-export interface RelatedRef {
-  commit: string;
-  when: string;
-  why: string;
-}
-
-export interface ScheduleItem {
-  title: string;
-  iso: string;
-  human: string;
-}
-
-/** Structured output of a single agent (shape depends on the agent kind). */
-export interface AgentOutput {
-  headline: string;
-  bullets: string[];
-  citations?: AgentCitation[];
-  graph_suggestions?: { label: string; type: NodeType }[];
-  actions?: ThoughtAction[];
-  risk_register?: RiskItem[];
-  related?: RelatedRef[];
-  schedule?: ScheduleItem[];
-  valence?: number;
-  arousal?: number;
-  reframe?: string;
-  raw?: string;
-}
-
-/** A single Agent Council run, as persisted on the Thoughtform. */
-export interface AgentRun {
-  id: string;
-  agent: AgentKind;
-  model: string;
-  provider: "groq" | "assemblyai-llm-gateway" | "local";
-  status: "queued" | "running" | "done" | "error" | "paused";
-  started_at: number;
-  finished_at?: number;
-  output?: AgentOutput;
-  error?: string;
-  latency_ms?: number;
-}
-
-/* ─────────────────────────── the Thoughtform commit ─────────────────────────── */
-
-export interface Thoughtform {
-  id: string;
-  commit_hash: string;
-  parent_hashes: string[];
-  branch: string;
-  created_at: number; // epoch ms
-  raw_text: string;
-  words: SyncWord[];
-  confidence: number;
-  compiled: CompiledThoughtform;
-  trace: DictationTrace;
-  agent_runs: AgentRun[];
-  compile_ms: number;
-  total_ms: number;
-  /** vector for k-NN retrieval; only compared within the same model */
-  embedding?: number[];
-  embedding_model?: string;
-  merged_from?: string[];
-  published?: boolean;
-}
-
-/* ─────────────────────────── temporal knowledge graph ─────────────────────────── */
-
+/** A node in the temporal knowledge graph. */
 export interface GraphNode {
   id: string;
-  type: NodeType;
+  kind: NodeKind;
   label: string;
-  description?: string;
-  created_at: number;
-  branch: string;
-  commit: string;
-  mentions: number;
-  last_seen: number;
-  // layout hints (optional, used by the canvas)
-  x?: number;
-  y?: number;
+  valid_from: number;
+  valid_to: number | null;
+  degree?: number;
+  createdBy?: string; // commit hash that created it
 }
 
+/** A temporal edge. */
 export interface GraphEdge {
   id: string;
   from: string;
   to: string;
-  label: string;
-  weight: number;
+  rel: string;
   valid_from: number;
-  valid_to: number | null; // null = still live
-  branch: string;
-  commit: string;
+  valid_to: number | null;
+  createdBy?: string;
 }
 
-/** A point-in-time slice of the graph (Time Travel). */
-export interface TwinSnapshot {
+export interface Graph {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  at: number;
-  branch: string;
 }
 
-/* ─────────────────────────── VCS ─────────────────────────── */
+/** An extracted action (Executor / Scheduler input). */
+export interface ThoughtAction {
+  kind: "calendar" | "reminder" | "message" | "pr" | "note" | "search";
+  title: string;
+  when?: string; // ISO string for time-based actions
+  target?: string; // e.g. Slack channel, repo
+  done?: boolean;
+}
 
+/** A named entity mentioned in the utterance. */
+export interface Entity {
+  name: string;
+  kind: NodeKind;
+}
+
+/** The output of a single agent run. */
+export interface AgentRun {
+  id: string;
+  agent: AgentKind;
+  model: string;
+  status: "pending" | "running" | "done" | "error";
+  output?: string;
+  citations?: { title: string; url: string }[];
+  startedAt: number;
+  finishedAt?: number;
+  thoughtformId: string;
+}
+
+/**
+ * The Thoughtform — VOXEMBLY's atomic, typed, versioned, executable unit.
+ * Each one is a commit against the Cognitive Twin.
+ */
+export interface Thoughtform {
+  id: string;
+  commit_hash: string;
+  parent_hash: string | null;
+  merge_parents?: string[]; // for merge commits
+  branch: string;
+
+  createdAt: number;
+  language_code?: string;
+
+  // transcription
+  raw_text: string;
+  polished_text: string;
+  words: Word[];
+  confidence: number;
+  request_time_ms: number;
+  audio_duration_ms: number;
+  session_id: string;
+  region: AaiRegion;
+  simulated?: boolean;
+
+  // cognition
+  intent: Intent;
+  sentiment: number; // -1..1
+  entities: Entity[];
+  actions: ThoughtAction[];
+  graph_mutations: GraphMutation[];
+  spawned_agents: AgentKind[];
+
+  // memory
+  embedding?: number[];
+
+  // context that produced this (auditable)
+  prompt_used?: string;
+  keyterms_used?: string[];
+}
+
+/** A branch ref in the VCS. */
 export interface Branch {
   name: string;
   head: string | null; // commit hash
-  created_at: number;
-  parent_branch: string | null;
-  forked_from: string | null; // commit hash
-  color: string;
+  createdAt: number;
+  createdFrom?: string | null;
 }
 
-/* ─────────────────────────── profile / domains / languages ─────────────────────────── */
-
-export type LatencyMode = "min_latency" | "balanced" | "max_accuracy";
-export type LocalePack = "none" | "keigo" | "usted" | "hinglish";
-
+/** The user profile / onboarding output. */
 export interface Profile {
   id: string;
-  display_name: string;
-  primary_language: string;
-  secondary_languages: string[];
+  displayName: string;
+  primaryLanguage: string;
+  secondaryLanguages: string[];
   domains: string[]; // domain ids
-  region: SyncRegion;
-  latency_mode: LatencyMode;
-  /** normalise polished_text into this ISO code, or null to preserve source language */
-  normalize_to: string | null;
-  locale_pack: LocalePack;
-  private_acronyms: string[];
-  onboarded_at: number | null;
-  high_contrast: boolean;
-  reduce_motion: boolean;
+  region: AaiRegion;
+  latencyMode: "min_latency" | "balanced" | "max_accuracy";
+  ambientDefault: boolean;
+  onboarded: boolean;
 }
 
+/** A Life Domain preset (keyterms + base prompt). */
 export interface Domain {
   id: string;
-  name: string;
-  emoji: string;
-  prompt: string;
+  label: string;
+  icon: string;
+  basePrompt: string;
   keyterms: string[];
 }
 
-export interface Language {
-  code: string;
-  name: string;
-  native?: string;
-}
-
-/** The 18-language matrix Universal-3.5 Pro supports (native code-switching). */
-export const LANGUAGES: Language[] = [
-  { code: "en", name: "English", native: "English" },
-  { code: "es", name: "Spanish", native: "Español" },
-  { code: "fr", name: "French", native: "Français" },
-  { code: "de", name: "German", native: "Deutsch" },
-  { code: "it", name: "Italian", native: "Italiano" },
-  { code: "pt", name: "Portuguese", native: "Português" },
-  { code: "nl", name: "Dutch", native: "Nederlands" },
-  { code: "hi", name: "Hindi", native: "हिन्दी" },
-  { code: "ja", name: "Japanese", native: "日本語" },
-  { code: "zh", name: "Chinese", native: "中文" },
-  { code: "ko", name: "Korean", native: "한국어" },
-  { code: "ru", name: "Russian", native: "Русский" },
-  { code: "tr", name: "Turkish", native: "Türkçe" },
-  { code: "pl", name: "Polish", native: "Polski" },
-  { code: "uk", name: "Ukrainian", native: "Українська" },
-  { code: "vi", name: "Vietnamese", native: "Tiếng Việt" },
-  { code: "ar", name: "Arabic", native: "العربية" },
-  { code: "id", name: "Indonesian", native: "Bahasa Indonesia" },
-];
-
-/* ─────────────────────────── published artifact ─────────────────────────── */
-
+/** A published (public) Thoughtform artifact. */
 export interface PublishedThoughtform {
   hash: string;
   thoughtform: Thoughtform;
-  snapshot: TwinSnapshot;
+  agentRuns: AgentRun[];
+  graphSnapshot: Graph;
+  publishedAt: number;
   author: string;
-  published_at: number;
+}
+
+/** The strict-JSON contract returned by the Groq compile pass. */
+export interface CompileResult {
+  intent: Intent;
+  polished_text: string;
+  sentiment: number;
+  entities: Entity[];
+  actions: ThoughtAction[];
+  graph_mutations: GraphMutation[];
+  spawned_agents: AgentKind[];
+}
+
+/** A composed dictation context (prompt + keyterms) from the Prompt Composer. */
+export interface ComposedContext {
+  prompt: string;
+  keyterms_prompt: string[];
+  language_code?: string;
+}
+
+/** A single DMR (Deep Memory Retrieval) probe result. */
+export interface DmrProbe {
+  question: string;
+  expected: string;
+  got: string;
+  pass: boolean;
 }

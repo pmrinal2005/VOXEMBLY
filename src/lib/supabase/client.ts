@@ -1,30 +1,29 @@
-/**
- * Supabase — OPTIONAL. When the env vars are absent VOXEMBLY runs in "Local Twin" mode
- * (IndexedDB only, zero accounts, $0) and every helper here degrades to a no-op.
- * Postgres holds the relational planes + pgvector; temporal edges are modelled in the
- * thoughtform rows themselves (valid_from / valid_to live on the graph mutations), so no
- * graph database is required for Time Travel.
- */
+"use client";
+
+// ============================================================================
+// VOXEMBLY — Supabase browser client (OPTIONAL). Returns null when env is
+// unset so the app runs fully in local IndexedDB demo mode.
+// ============================================================================
 
 import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+let cached: SupabaseClient | null | undefined;
 
-export const supabaseConfigured = () => Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-
-let browser: SupabaseClient | null = null;
-
-/** Browser client (RLS-scoped to the signed-in user). null when unconfigured. */
-export function supabaseBrowser(): SupabaseClient | null {
-  if (!supabaseConfigured()) return null;
-  if (!browser) browser = createBrowserClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  return browser;
+export function getSupabaseBrowser(): SupabaseClient | null {
+  if (cached !== undefined) return cached;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    cached = null;
+    return null;
+  }
+  cached = createBrowserClient(url, key);
+  return cached;
 }
 
-export type TwinMode = "local" | "cloud";
-
-export function twinMode(): TwinMode {
-  return supabaseConfigured() ? "cloud" : "local";
+export function supabaseConfigured(): boolean {
+  return Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  );
 }

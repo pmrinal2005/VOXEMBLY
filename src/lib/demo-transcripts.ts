@@ -1,31 +1,74 @@
 // ============================================================================
-// Demo transcripts — used when the mic is unavailable or ASSEMBLYAI_API_KEY is
-// missing, so the full Push-to-Think loop is always demoable end-to-end.
+// VOXEMBLY — Demo transcripts. Used ONLY when no ASSEMBLYAI_API_KEY is set, so
+// the whole loop (compile → graph → agents → timeline) remains demoable with
+// zero configuration. The UI clearly labels these as "simulated".
 // ============================================================================
 
-export interface DemoTranscript {
+import type { Word } from "@/lib/types";
+
+export interface DemoClip {
   raw: string;
-  words: { text: string; confidence: number }[];
+  words: string[]; // spoken words, will get synthetic confidences
+  language_code?: string;
 }
 
-const RAW_LINES = [
-  "so um I'm thinking about branching the VOXEMBLY sprint, like let's move the agent council latency task to Priya and Kenji, but you know I'm a bit worried about the Neo4j rate limits",
-  "uh convene council on migrating auth to passkeys, I mean should we ship it this sprint",
-  "let's decide, um, whether we stay on Neo4j Aura or migrate to FalkorDB on a Hugging Face Space",
-  "remind me to review the AssemblyAI latency dial with Leo tomorrow at ten am",
-  "idea: what if every Thoughtform could be forked and merged like a git branch for your mind",
-  "I'm honestly really excited about how fast the dictation round trip feels now, it's like a hundred and thirty four milliseconds",
+export const DEMO_CLIPS: DemoClip[] = [
+  {
+    raw:
+      "Um, I'm thinking about, like, branching the VOXEMBLY sprint. Let's move the agent council latency task to Priya and Kenji, but, uh, I'm kind of worried about the Neo4j rate limits.",
+    words:
+      "Um I'm thinking about like branching the VOXEMBLY sprint Let's move the agent council latency task to Priya and Kenji but uh I'm kind of worried about the Neo4j rate limits".split(
+        " ",
+      ),
+  },
+  {
+    raw:
+      "So, remind me to email Dr. Alvarez about the cardiology follow-up tomorrow at 9 AM, and, um, book a room for the review.",
+    words:
+      "So remind me to email Dr Alvarez about the cardiology follow-up tomorrow at 9 AM and um book a room for the review".split(
+        " ",
+      ),
+  },
+  {
+    raw:
+      "I have an idea for VOXEMBLY: what if every Thoughtform could be forked and merged like Git branches, you know, for cognition itself.",
+    words:
+      "I have an idea for VOXEMBLY what if every Thoughtform could be forked and merged like Git branches you know for cognition itself".split(
+        " ",
+      ),
+  },
+  {
+    raw:
+      "Decision: we should migrate the graph from Aura to FalkorDB because, honestly, the three day inactivity shutdown keeps biting us.",
+    words:
+      "Decision we should migrate the graph from Aura to FalkorDB because honestly the three day inactivity shutdown keeps biting us".split(
+        " ",
+      ),
+  },
+  {
+    raw:
+      "Honestly I'm feeling pretty good about the demo today, the latency dial looks incredible and the agent choir is a real wow moment.",
+    words:
+      "Honestly I'm feeling pretty good about the demo today the latency dial looks incredible and the agent choir is a real wow moment".split(
+        " ",
+      ),
+  },
 ];
 
-export function pickDemoTranscript(): DemoTranscript {
-  const raw = RAW_LINES[Math.floor(Math.random() * RAW_LINES.length)];
-  const words = raw.split(/\s+/).map((text) => ({
-    text,
-    // Simulate realistic per-word confidence with a few uncertain words.
-    confidence:
-      /^(um|uh|like|you|know|i|mean|so)$/i.test(text) || Math.random() < 0.12
-        ? 0.55 + Math.random() * 0.25
-        : 0.9 + Math.random() * 0.1,
-  }));
-  return { raw, words };
+/** Pick a demo clip (round-robin by count) and synthesize word confidences. */
+export function pickDemoClip(seq: number): {
+  raw: string;
+  words: Word[];
+  confidence: number;
+  language_code?: string;
+} {
+  const clip = DEMO_CLIPS[seq % DEMO_CLIPS.length];
+  const words: Word[] = clip.words.map((t) => {
+    // Lower confidence for proper nouns / uncommon tokens to feed the heatmap.
+    const uncommon = /^[A-Z0-9]/.test(t) && t.length > 3;
+    const base = uncommon ? 0.62 + Math.random() * 0.2 : 0.9 + Math.random() * 0.09;
+    return { text: t, confidence: Math.min(0.99, base) };
+  });
+  const confidence = words.reduce((a, w) => a + w.confidence, 0) / words.length;
+  return { raw: clip.raw, words, confidence, language_code: clip.language_code };
 }

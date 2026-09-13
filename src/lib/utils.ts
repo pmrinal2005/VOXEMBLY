@@ -1,52 +1,58 @@
+// ============================================================================
+// VOXEMBLY — utilities. Pure, environment-agnostic (works in Node & browser).
+// ============================================================================
+
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
-export function cn(...inputs: ClassValue[]) {
+/** Tailwind-aware className combiner. */
+export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
-/** Short unique id with a readable prefix (e.g. `draft-1a2b3c`). */
-export function uid(prefix = "id"): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+/** A short, URL-safe unique id. */
+export function uid(prefix = ""): string {
+  const s =
+    Math.random().toString(36).slice(2, 10) +
+    Date.now().toString(36).slice(-4);
+  return prefix ? `${prefix}_${s}` : s;
 }
 
 /**
- * SHA-256 hex digest. Uses Web Crypto (available in the browser and in the Node/Edge
- * runtimes Next.js uses); falls back to a deterministic FNV mix if subtle crypto is
- * unavailable, so commit hashing never throws.
+ * SHA-256 hex digest. Uses Web Crypto (available in Node 18+ globalThis.crypto
+ * and all modern browsers / edge runtimes). Falls back to a deterministic
+ * non-crypto hash if subtle is unavailable.
  */
 export async function sha256Hex(input: string): Promise<string> {
   try {
-    const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-    if (subtle) {
-      const data = new TextEncoder().encode(input);
-      const digest = await subtle.digest("SHA-256", data);
-      return Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("");
-    }
+    const enc = new TextEncoder().encode(input);
+    const buf = await globalThis.crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
   } catch {
-    /* fall through to deterministic fallback */
+    return fnv1a(input).toString(16).padStart(8, "0").repeat(8).slice(0, 64);
   }
-  // Deterministic 64-hex fallback (two FNV passes over the input + reversed input).
-  const mix = (s: string) => {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 16777619) >>> 0;
-    }
-    return (h >>> 0).toString(16).padStart(8, "0");
-  };
-  const a = mix(input);
-  const b = mix([...input].reverse().join(""));
-  const c = mix(a + input);
-  const d = mix(b + input);
-  return (a + b + c + d).padEnd(64, "0").slice(0, 64);
 }
 
-/** Cosine similarity of two equal-length L2-ish vectors. Returns 0 on mismatch. */
+/** A git-style 7-char short hash. */
+export function shortHash(hash: string): string {
+  return (hash || "").slice(0, 7);
+}
+
+/** Synchronous FNV-1a 32-bit hash (used for deterministic fallbacks). */
+export function fnv1a(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** Cosine similarity between two equal-length vectors. */
 export function cosine(a: number[], b: number[]): number {
-  if (!a?.length || !b?.length || a.length !== b.length) return 0;
+  if (!a || !b || a.length !== b.length || a.length === 0) return 0;
   let dot = 0;
   let na = 0;
   let nb = 0;
@@ -55,73 +61,103 @@ export function cosine(a: number[], b: number[]): number {
     na += a[i] * a[i];
     nb += b[i] * b[i];
   }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom ? dot / denom : 0;
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
-/** Format a millisecond number for the Latency Dial / traces. */
-export function formatMs(ms: number | null | undefined): string {
+/** Format milliseconds for the Latency Dial ("134 ms" / "1.9 s"). */
+export function formatMs(ms: number | undefined | null): string {
   if (ms == null || Number.isNaN(ms)) return "—";
-  if (ms < 1) return "<1ms";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
 }
 
-// Deterministic short "commit" hash (7 hex chars, git-style) from a seed string.
-export function shortHash(seed: string): string {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  // Mix a bit more so short inputs still spread.
-  h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
-  h = Math.imul(h ^ (h >>> 13), 3266489909) >>> 0;
-  return (h >>> 0).toString(16).padStart(8, "0").slice(0, 7);
+/** Clamp a number. */
+export function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
 }
 
-// Random-ish commit hash for runtime-created Thoughtforms.
-export function randomHash(): string {
-  return shortHash(`${Date.now()}-${Math.random()}`);
-}
-
-export function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const s = Math.floor(diff / 1000);
+/** Relative time string ("2m ago"). */
+export function timeAgo(ts: number): string {
+  const d = Date.now() - ts;
+  const s = Math.floor(d / 1000);
   if (s < 60) return `${s}s ago`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  return `${d}d ago`;
+  const days = Math.floor(h / 24);
+  return `${days}d ago`;
 }
 
-export const NODE_COLORS: Record<string, string> = {
-  Person: "#A78BFA",
-  Project: "#00CBD6",
-  Concept: "#F59E0B",
-  Task: "#34D399",
-  Decision: "#EC4899",
-  Domain: "#60A5FA",
-  Location: "#F472B6",
-  Emotion: "#FB7185",
-  Memory: "#A78BFA",
-  Entity: "#94A3B8",
-};
+/** Format an epoch ms into a compact date/time. */
+export function fmtDateTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(ts);
+  }
+}
 
-export const INTENT_COLORS: Record<string, string> = {
-  note: "#94A3B8",
-  task: "#34D399",
-  decision: "#EC4899",
-  question: "#60A5FA",
-  idea: "#F59E0B",
-  meeting: "#00CBD6",
-  emotion: "#FB7185",
-  command: "#A78BFA",
-  memory: "#A78BFA",
-};
+/** Safe JSON parse that extracts the first balanced {...} object from text. */
+export function extractJson<T = unknown>(text: string): T | null {
+  if (!text) return null;
+  // Strip common code fences.
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+  // Try direct parse first.
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    /* fall through */
+  }
+  // Find the first balanced object.
+  const start = cleaned.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < cleaned.length; i++) {
+    const c = cleaned[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        const slice = cleaned.slice(start, i + 1);
+        try {
+          return JSON.parse(slice) as T;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
 
-export function clamp(v: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, v));
+/** Sleep helper. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Deterministic pseudo-random in [0,1) from a string seed. */
+export function seededRandom(seed: string): () => number {
+  let s = fnv1a(seed) || 1;
+  return () => {
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    s >>>= 0;
+    return s / 0xffffffff;
+  };
+}
+
+/** Title-case a word list into a label. */
+export function titleCase(s: string): string {
+  return s.replace(/\b\w/g, (c) => c.toUpperCase());
 }

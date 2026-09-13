@@ -1,13 +1,11 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  content: [
-    "./src/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
+  content: ["./src/**/*.{js,ts,jsx,tsx,mdx}"],
   theme: {
     extend: {
       colors: {
-        // VOXEMBLY dark palette (grounded in the reference dashboard)
+        // VOXEMBLY dark palette
         base: {
           950: "#060913", // deepest background
           900: "#0B0F19", // app background
@@ -21,8 +19,8 @@ const config: Config = {
         },
         ink: {
           DEFAULT: "#E5EDF7", // primary text
-          muted: "#94A3B8",  // secondary labels
-          faint: "#475569",  // auxiliary
+          muted: "#94A3B8", // secondary labels
+          faint: "#475569", // auxiliary
         },
         // Node / accent semantic colors
         vox: {
@@ -32,6 +30,8 @@ const config: Config = {
           amber: "#F59E0B",
           purple: "#A78BFA",
           pink: "#EC4899",
+          red: "#F43F5E",
+          blue: "#60A5FA",
         },
       },
       fontFamily: {
@@ -43,7 +43,8 @@ const config: Config = {
         "2xl": "1rem",
       },
       boxShadow: {
-        panel: "0 1px 0 0 rgba(255,255,255,0.02) inset, 0 8px 24px -12px rgba(0,0,0,0.6)",
+        panel:
+          "0 1px 0 0 rgba(255,255,255,0.02) inset, 0 8px 24px -12px rgba(0,0,0,0.6)",
         glow: "0 0 0 1px rgba(0,203,214,0.25), 0 0 24px -4px rgba(0,203,214,0.35)",
       },
       keyframes: {

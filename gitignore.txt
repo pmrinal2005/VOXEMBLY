@@ -19,9 +19,8 @@ next-env.d.ts
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# env files
+# env files (NEVER commit real keys)
 .env
 .env.local
 .env*.local
@@ -32,15 +31,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 
-# editor
-.idea/
-.vscode/
-
-# logs / pm2
-*.log
-logs/
+# pm2 / logs
 .pm2/
+logs/
+*.log
 
 # backups
 *.tar.gz
-*.bak
+*.zip

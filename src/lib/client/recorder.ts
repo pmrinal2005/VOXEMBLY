@@ -1,165 +1,51 @@
-/**
- * Push-to-Think capture (browser).
- *
- * The Sync API accepts WAV (`audio/wav`) or raw PCM S16LE (`audio/pcm`) — 16-bit only, mono or stereo,
- * at 8000/16000/22050/24000/32000/44100/48000 Hz, 80 ms–120 s, ≤40 MB.
- * `MediaRecorder` produces WebM/Opus, which is NOT accepted, so we capture Float32 PCM through the
- * WebAudio graph and encode 16 kHz mono S16LE ourselves (WAV for compatibility, raw PCM for ~15% less payload).
- *
- * Also provides an energy-based VAD (RMS + hangover) so Ambient Mode can segment continuous speech into
- * ≤90 s utterances that stay inside the documented 120 s ceiling, and so silent regions are trimmed.
- */
+"use client";
+
+// ============================================================================
+// VOXEMBLY — Push-to-Talk recorder (CLIENT-SIDE).
+//
+// Captures mic audio via WebAudio, downsamples to 16 kHz mono, and encodes to
+// 16-bit PCM WAV — the format blessed by the Dictation API. Includes a simple
+// energy-based VAD trim (silence hangover) to cut leading/trailing silence,
+// standing in for the Silero-VAD-WASM path described in the plan.
+// ============================================================================
 
 import { LIMITS } from "@/lib/dictation/client";
 
-export const TARGET_SAMPLE_RATE = 16000;
-
 export interface CaptureResult {
   wav: Blob;
-  pcm: Blob;
-  samples: Float32Array;
   durationMs: number;
+  peaks: number[]; // downsampled waveform for visualization
   sampleRate: number;
-  peak: number;
-  rms: number;
-  /** true when the whole clip was below the speech threshold */
-  silent: boolean;
+  tooShort: boolean;
 }
 
-/** Linear-interpolation resampler to 16 kHz (the rate Universal-3.5 Pro is happiest with). */
-export function resample(input: Float32Array, from: number, to = TARGET_SAMPLE_RATE): Float32Array {
-  if (from === to || input.length === 0) return input;
-  const ratio = from / to;
-  const outLength = Math.floor(input.length / ratio);
-  const out = new Float32Array(outLength);
-  for (let i = 0; i < outLength; i++) {
-    const pos = i * ratio;
-    const i0 = Math.floor(pos);
-    const i1 = Math.min(i0 + 1, input.length - 1);
-    const frac = pos - i0;
-    out[i] = input[i0] * (1 - frac) + input[i1] * frac;
-  }
-  return out;
-}
+const TARGET_RATE = 16000;
 
-/** Float32 [-1,1] → 16-bit little-endian PCM. */
-export function floatToPCM16(input: Float32Array): ArrayBuffer {
-  const buf = new ArrayBuffer(input.length * 2);
-  const view = new DataView(buf);
-  for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return buf;
-}
-
-/** Wrap S16LE PCM in a 44-byte RIFF/WAVE header — sample rate + channels live in the header. */
-export function encodeWAV(pcm: ArrayBuffer, sampleRate = TARGET_SAMPLE_RATE, channels = 1): Blob {
-  const header = new ArrayBuffer(44);
-  const v = new DataView(header);
-  const wstr = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
-  };
-  const byteRate = sampleRate * channels * 2;
-  wstr(0, "RIFF");
-  v.setUint32(4, 36 + pcm.byteLength, true);
-  wstr(8, "WAVE");
-  wstr(12, "fmt ");
-  v.setUint32(16, 16, true); // PCM fmt chunk size
-  v.setUint16(20, 1, true); // format = PCM
-  v.setUint16(22, channels, true);
-  v.setUint32(24, sampleRate, true);
-  v.setUint32(28, byteRate, true);
-  v.setUint16(32, channels * 2, true); // block align
-  v.setUint16(34, 16, true); // bits per sample — 16-bit only
-  wstr(36, "data");
-  v.setUint32(40, pcm.byteLength, true);
-  return new Blob([header, pcm], { type: "audio/wav" });
-}
-
-export function rmsOf(x: Float32Array): number {
-  if (!x.length) return 0;
-  let s = 0;
-  for (let i = 0; i < x.length; i++) s += x[i] * x[i];
-  return Math.sqrt(s / x.length);
-}
-
-export function peakOf(x: Float32Array): number {
-  let p = 0;
-  for (let i = 0; i < x.length; i++) p = Math.max(p, Math.abs(x[i]));
-  return p;
-}
-
-/** Trim leading/trailing silence, keeping a short pad so word onsets survive. */
-export function trimSilence(x: Float32Array, threshold = 0.01, padMs = 120, sampleRate = TARGET_SAMPLE_RATE): Float32Array {
-  const win = Math.max(1, Math.floor(sampleRate * 0.02));
-  const pad = Math.floor((padMs / 1000) * sampleRate);
-  let start = 0;
-  let end = x.length;
-  for (let i = 0; i + win <= x.length; i += win) {
-    if (rmsOf(x.subarray(i, i + win)) > threshold) {
-      start = Math.max(0, i - pad);
-      break;
-    }
-  }
-  for (let i = x.length - win; i >= 0; i -= win) {
-    if (rmsOf(x.subarray(i, i + win)) > threshold) {
-      end = Math.min(x.length, i + win + pad);
-      break;
-    }
-  }
-  return end > start ? x.slice(start, end) : x;
-}
-
-const SPEECH_RMS = 0.006;
-
-/**
- * PushToTalkRecorder — one long-lived AudioContext + MediaStream so key-down is instant
- * (permission and graph setup are paid once, not per utterance).
- */
 export class PushToTalkRecorder {
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private node: ScriptProcessorNode | null = null;
+  private processor: ScriptProcessorNode | null = null;
   private chunks: Float32Array[] = [];
-  private recording = false;
+  private recordingRate = 48000;
   private startedAt = 0;
-  private analyser: AnalyserNode | null = null;
-  private levelBuf: Uint8Array | null = null;
+  private levelCb?: (level: number) => void;
 
-  /** Ambient Mode segmentation state */
-  private vadVoiced = false;
-  private vadSilenceMs = 0;
-  private vadVoicedMs = 0;
-
-  onLevel?: (level: number) => void;
-  /** Fired in Ambient Mode when a natural utterance boundary is detected. */
-  onUtterance?: (result: CaptureResult) => void;
-  onMaxDuration?: () => void;
-
-  ambient = false;
-  /** stay well inside the documented 120 s ceiling */
-  maxUtteranceMs = 90_000;
-  silenceHangoverMs = 700;
-  minUtteranceMs = 320;
-
-  get isRecording() {
-    return this.recording;
-  }
-  get sampleRate() {
-    return this.ctx?.sampleRate ?? 48000;
-  }
-  get elapsedMs() {
-    return this.recording ? Date.now() - this.startedAt : 0;
+  get supported(): boolean {
+    return (
+      typeof navigator !== "undefined" &&
+      Boolean(navigator.mediaDevices?.getUserMedia) &&
+      (typeof AudioContext !== "undefined" ||
+        typeof (globalThis as any).webkitAudioContext !== "undefined")
+    );
   }
 
-  /** Call on app open / first interaction: acquires the mic and builds the graph once. */
-  async prepare(): Promise<void> {
-    if (this.ctx && this.stream) {
-      if (this.ctx.state === "suspended") await this.ctx.resume();
-      return;
-    }
+  onLevel(cb: (level: number) => void) {
+    this.levelCb = cb;
+  }
+
+  async start(): Promise<void> {
+    if (!this.supported) throw new Error("mic_unsupported");
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -168,156 +54,172 @@ export class PushToTalkRecorder {
         autoGainControl: true,
       },
     });
-    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.ctx = new Ctor();
-    if (this.ctx.state === "suspended") await this.ctx.resume();
+    const Ctx =
+      (typeof AudioContext !== "undefined"
+        ? AudioContext
+        : (globalThis as any).webkitAudioContext) as typeof AudioContext;
+    this.ctx = new Ctx();
+    this.recordingRate = this.ctx.sampleRate;
     this.source = this.ctx.createMediaStreamSource(this.stream);
-
-    this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 512;
-    this.levelBuf = new Uint8Array(this.analyser.frequencyBinCount);
-    this.source.connect(this.analyser);
-
-    // ScriptProcessor is deprecated but universally available and needs no separate worklet file —
-    // the right trade-off for a $0, single-file build. Buffer 2048 ≈ 43 ms at 48 kHz.
-    this.node = this.ctx.createScriptProcessor(2048, 1, 1);
-    this.node.onaudioprocess = (e) => this.onAudio(e);
-    this.source.connect(this.node);
-    // Zero-gain sink: keeps the graph pulling without echoing the mic to the speakers.
-    const sink = this.ctx.createGain();
-    sink.gain.value = 0;
-    this.node.connect(sink);
-    sink.connect(this.ctx.destination);
-  }
-
-  private onAudio(e: AudioProcessingEvent) {
-    const input = e.inputBuffer.getChannelData(0);
-    const frameMs = (input.length / this.sampleRate) * 1000;
-    const level = rmsOf(input);
-    this.onLevel?.(Math.min(1, level * 12));
-
-    if (this.recording) {
-      this.chunks.push(new Float32Array(input));
-      if (this.elapsedMs >= LIMITS.maxDurationMs - 2000) {
-        this.onMaxDuration?.();
-        return;
-      }
-    }
-
-    if (!this.ambient) return;
-
-    // ── Ambient Mode VAD: RMS gate + hangover, cutting utterances at natural pauses ──
-    const voiced = level > SPEECH_RMS;
-    if (voiced) {
-      if (!this.vadVoiced) {
-        this.vadVoiced = true;
-        this.vadVoicedMs = 0;
-        this.vadSilenceMs = 0;
-        if (!this.recording) this.start();
-      }
-      this.vadVoicedMs += frameMs;
-      this.vadSilenceMs = 0;
-    } else if (this.vadVoiced) {
-      this.vadSilenceMs += frameMs;
-    }
-
-    const tooLong = this.recording && this.elapsedMs >= this.maxUtteranceMs;
-    const settled = this.vadVoiced && this.vadSilenceMs >= this.silenceHangoverMs;
-    if (this.recording && (tooLong || settled)) {
-      this.vadVoiced = false;
-      this.vadSilenceMs = 0;
-      const result = this.stop();
-      if (result && result.durationMs >= this.minUtteranceMs && !result.silent) this.onUtterance?.(result);
-    }
-  }
-
-  /** Instantaneous mic level (0..1) for the Orb's confidence ring. */
-  level(): number {
-    if (!this.analyser || !this.levelBuf) return 0;
-    this.analyser.getByteTimeDomainData(this.levelBuf as Uint8Array<ArrayBuffer>);
-    let sum = 0;
-    for (let i = 0; i < this.levelBuf.length; i++) {
-      const v = (this.levelBuf[i] - 128) / 128;
-      sum += v * v;
-    }
-    return Math.min(1, Math.sqrt(sum / this.levelBuf.length) * 4);
-  }
-
-  start() {
+    // ScriptProcessor is deprecated but universally supported and needs no
+    // worklet file — ideal for a zero-build, Vercel-friendly capture path.
+    this.processor = this.ctx.createScriptProcessor(4096, 1, 1);
     this.chunks = [];
-    this.recording = true;
     this.startedAt = Date.now();
+
+    this.processor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      this.chunks.push(new Float32Array(input));
+      if (this.levelCb) {
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+        this.levelCb(Math.min(1, Math.sqrt(sum / input.length) * 4));
+      }
+    };
+    this.source.connect(this.processor);
+    this.processor.connect(this.ctx.destination);
   }
 
-  /** Stop and encode. Returns null if nothing was captured. */
-  stop(): CaptureResult | null {
-    if (!this.recording) return null;
-    this.recording = false;
-    const total = this.chunks.reduce((a, c) => a + c.length, 0);
-    if (!total) return null;
+  async stop(): Promise<CaptureResult> {
+    const durationMs = Date.now() - this.startedAt;
+    this.processor?.disconnect();
+    this.source?.disconnect();
+    this.stream?.getTracks().forEach((t) => t.stop());
+    if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
 
-    const raw = new Float32Array(total);
-    let off = 0;
-    for (const c of this.chunks) {
-      raw.set(c, off);
-      off += c.length;
-    }
+    const merged = mergeChunks(this.chunks);
+    const down = downsample(merged, this.recordingRate, TARGET_RATE);
+    const trimmed = vadTrim(down, TARGET_RATE);
+    const wav = encodeWav(trimmed, TARGET_RATE);
+    const peaks = computePeaks(trimmed, 64);
+    const realDur = Math.round((trimmed.length / TARGET_RATE) * 1000);
+
     this.chunks = [];
-
-    const down = resample(raw, this.sampleRate, TARGET_SAMPLE_RATE);
-    const trimmed = trimSilence(down);
-    const samples = trimmed.length > TARGET_SAMPLE_RATE * 0.05 ? trimmed : down;
-    const pcmBuf = floatToPCM16(samples);
-    const durationMs = Math.round((samples.length / TARGET_SAMPLE_RATE) * 1000);
-    const rms = rmsOf(samples);
+    this.ctx = null;
+    this.stream = null;
 
     return {
-      wav: encodeWAV(pcmBuf, TARGET_SAMPLE_RATE, 1),
-      pcm: new Blob([pcmBuf], { type: "audio/pcm" }),
-      samples,
-      durationMs,
-      sampleRate: TARGET_SAMPLE_RATE,
-      peak: peakOf(samples),
-      rms,
-      silent: rms < SPEECH_RMS * 0.6,
+      wav,
+      durationMs: realDur || durationMs,
+      peaks,
+      sampleRate: TARGET_RATE,
+      tooShort: (realDur || durationMs) < LIMITS.MIN_MS,
     };
   }
 
-  setAmbient(on: boolean) {
-    this.ambient = on;
-    this.vadVoiced = false;
-    this.vadSilenceMs = 0;
-    if (!on && this.recording) this.stop();
-  }
-
-  /** Release the mic (settings toggle / page unload). */
-  dispose() {
-    this.recording = false;
-    this.chunks = [];
+  cancel() {
     try {
-      this.node?.disconnect();
+      this.processor?.disconnect();
       this.source?.disconnect();
-      this.analyser?.disconnect();
       this.stream?.getTracks().forEach((t) => t.stop());
-      void this.ctx?.close();
+      if (this.ctx && this.ctx.state !== "closed") this.ctx.close();
     } catch {
-      /* already torn down */
+      /* noop */
     }
-    this.ctx = null;
-    this.stream = null;
-    this.source = null;
-    this.node = null;
-    this.analyser = null;
+    this.chunks = [];
   }
 }
 
-/** Downsampled waveform peaks for the published-artifact waveform. */
-export function waveformPeaks(samples: Float32Array, buckets = 120): number[] {
-  if (!samples.length) return new Array(buckets).fill(0);
-  const size = Math.floor(samples.length / buckets) || 1;
+function mergeChunks(chunks: Float32Array[]): Float32Array {
+  const len = chunks.reduce((a, c) => a + c.length, 0);
+  const out = new Float32Array(len);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
+function downsample(buffer: Float32Array, from: number, to: number): Float32Array {
+  if (to >= from) return buffer;
+  const ratio = from / to;
+  const newLen = Math.floor(buffer.length / ratio);
+  const out = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const idx = Math.floor(i * ratio);
+    out[i] = buffer[idx];
+  }
+  return out;
+}
+
+/** Energy-based VAD trim: drop leading/trailing silence, keep a hangover. */
+function vadTrim(buffer: Float32Array, rate: number): Float32Array {
+  if (buffer.length === 0) return buffer;
+  const win = Math.floor(rate * 0.02); // 20ms windows
+  const threshold = 0.008;
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < buffer.length; i += win) {
+    let sum = 0;
+    const end = Math.min(i + win, buffer.length);
+    for (let j = i; j < end; j++) sum += buffer[j] * buffer[j];
+    const rms = Math.sqrt(sum / (end - i));
+    if (rms > threshold) {
+      if (first === -1) first = i;
+      last = end;
+    }
+  }
+  if (first === -1) return buffer; // all quiet — keep as-is
+  const hang = Math.floor(rate * 0.2); // 200ms hangover
+  const s = Math.max(0, first - hang);
+  const e = Math.min(buffer.length, last + hang);
+  return buffer.slice(s, e);
+}
+
+/** Encode Float32 mono samples into a 16-bit PCM WAV Blob. */
+export function encodeWav(samples: Float32Array, rate: number): Blob {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
+/** Peaks for the waveform visualization. */
+export function computePeaks(samples: Float32Array, bins: number): number[] {
+  if (samples.length === 0) return new Array(bins).fill(0);
+  const size = Math.floor(samples.length / bins) || 1;
+  const peaks: number[] = [];
+  for (let b = 0; b < bins; b++) {
+    let max = 0;
+    const start = b * size;
+    const end = Math.min(start + size, samples.length);
+    for (let i = start; i < end; i++) max = Math.max(max, Math.abs(samples[i]));
+    peaks.push(max);
+  }
+  return peaks;
+}
+
+/** Random peaks (for the demo/simulated path). */
+export function waveformPeaks(bins = 64, seed = Math.random()): number[] {
   const out: number[] = [];
-  for (let i = 0; i < buckets; i++) {
-    out.push(Math.min(1, peakOf(samples.subarray(i * size, (i + 1) * size))));
+  let s = seed;
+  for (let i = 0; i < bins; i++) {
+    s = (s * 9301 + 49297) % 233280;
+    const r = s / 233280;
+    const env = Math.sin((i / bins) * Math.PI);
+    out.push(0.15 + r * 0.85 * env);
   }
   return out;
 }
