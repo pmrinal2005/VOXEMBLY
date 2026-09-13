@@ -35,7 +35,6 @@ yarn-error.log*
 .pm2/
 logs/
 *.log
-ecosystem.config.cjs
 
 # backups
 *.tar.gz

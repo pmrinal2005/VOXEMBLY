@@ -10,13 +10,16 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.18.2",
+    "idb": "^8.0.3",
     "lucide-react": "^0.469.0",
     "next": "^15.5.25",
     "react": "19.1.1",
     "react-dom": "19.1.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
