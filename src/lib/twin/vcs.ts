@@ -36,6 +36,21 @@ export function mainBranch(now = Date.now()): Branch {
   };
 }
 
+/** The initial branch map (just `main`), keyed by name. */
+export function initialBranches(now = Date.now()): Record<string, Branch> {
+  return { [MAIN_BRANCH]: mainBranch(now) };
+}
+
+/** Return a new branch map with `branch`'s head advanced to `commitHash`. */
+export function advanceHead(
+  branches: Record<string, Branch>,
+  branch: string,
+  commitHash: string,
+): Record<string, Branch> {
+  const existing = branches[branch] ?? mainBranch();
+  return { ...branches, [branch]: { ...existing, name: branch, head: commitHash } };
+}
+
 /** The fields that content-address a commit. */
 export interface CommitInput {
   parent_hashes: string[];

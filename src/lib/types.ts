@@ -386,3 +386,56 @@ export interface DmrProbe {
   got: string;
   pass: boolean;
 }
+
+/* ─────────────────────────── Pipeline transport types ─────────────────────────── */
+
+/**
+ * Region alias. The Dictation adapter and the API routes both refer to routing
+ * regions as `AaiRegion`; it is identical to `SyncRegion`.
+ */
+export type AaiRegion = SyncRegion;
+
+/** Alias kept for the DictationClient adapter's normalized word shape. */
+export type Word = SyncWord;
+
+/**
+ * The normalized response the `/api/transcribe` route returns and the client
+ * pipeline consumes. `transcript` is the AssemblyAI Sync payload mapped into
+ * VOXEMBLY's shape; `meta` carries our own proxy-side telemetry.
+ */
+export interface TranscribeResponse {
+  transcript: SyncTranscript;
+  meta: {
+    proxy_ms: number | null; // route-handler round-trip to AAI
+    warmed: boolean;
+    region: SyncRegion;
+    endpoint: string;
+    route: "sync" | "prerecorded" | "simulated";
+    retries: number;
+    simulated?: boolean;
+  };
+}
+
+/** The result of the Groq compile pass, returned by `/api/compile`. */
+export interface CompileResult {
+  compiled: CompiledThoughtform;
+  compile_ms: number;
+  degraded: boolean; // true when the heuristic (no-LLM) compiler was used
+}
+
+/**
+ * An offline draft: a dictation captured while offline, queued in IndexedDB and
+ * replayed when connectivity returns (accessibility / low-bandwidth path).
+ */
+export interface DraftRecord {
+  id: string;
+  created_at: number;
+  audio: Blob;
+  contentType: string;
+  durationMs: number;
+  sampleRate: number;
+  channels: number;
+  branch: string;
+  config: DictationConfig;
+  attempts: number;
+}

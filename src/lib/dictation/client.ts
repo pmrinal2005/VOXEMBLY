@@ -20,10 +20,17 @@
 //   • Pre-warm:  a HEAD/GET to warm TLS+TCP while the user is still recording.
 // ============================================================================
 
-import type { AaiRegion, TranscribeResponse, Word } from "@/lib/types";
+import type { AaiRegion, SyncTranscript, Word } from "@/lib/types";
 
-/** Hard limits from the Dictation API spec. */
+/**
+ * Hard limits from the Dictation API spec (80 ms .. 120 s clip, <=40 MB, WAV /
+ * raw PCM; prompt <=50 words; keyterms <=1000 phrases, <=6 words each, <2048
+ * chars). Both `minDurationMs`/`maxDurationMs` (client-facing) and the terse
+ * MIN_MS/MAX_MS aliases are exposed so callers can use either name.
+ */
 export const LIMITS = {
+  minDurationMs: 80,
+  maxDurationMs: 120_000,
   MIN_MS: 80,
   MAX_MS: 120_000,
   MAX_BYTES: 40 * 1024 * 1024,
@@ -45,10 +52,10 @@ function baseUrl(region: AaiRegion): string {
   }
 }
 
-export interface DictationConfig {
+export interface DictationRequestConfig {
   prompt?: string;
   keyterms_prompt?: string[];
-  language_code?: string;
+  language_code?: string | null;
   region?: AaiRegion;
 }
 
@@ -146,10 +153,10 @@ export class DictationClient {
    */
   async transcribe(
     audio: Blob | Buffer | ArrayBuffer | Uint8Array,
-    cfg: DictationConfig = {},
+    cfg: DictationRequestConfig = {},
     filename = "clip.wav",
     contentType = "audio/wav",
-  ): Promise<TranscribeResponse> {
+  ): Promise<SyncTranscript & { region: AaiRegion; endpoint: string }> {
     if (!this.configured) {
       throw new DictationError("no_api_key", "ASSEMBLYAI_API_KEY is not set");
     }
@@ -225,8 +232,12 @@ function toBlob(audio: Blob | Buffer | ArrayBuffer | Uint8Array, contentType: st
   return new Blob([new Uint8Array(audio as Uint8Array)], { type: contentType });
 }
 
-/** Map the raw AAI Sync response into VOXEMBLY's normalized TranscribeResponse. */
-function normalize(json: any, region: AaiRegion, endpoint: string): TranscribeResponse {
+/** Map the raw AAI Sync response into VOXEMBLY's normalized SyncTranscript. */
+function normalize(
+  json: any,
+  region: AaiRegion,
+  endpoint: string,
+): SyncTranscript & { region: AaiRegion; endpoint: string } {
   const words: Word[] = Array.isArray(json?.words)
     ? json.words.map((w: any) => ({
         text: String(w.text ?? ""),
@@ -246,9 +257,8 @@ function normalize(json: any, region: AaiRegion, endpoint: string): TranscribeRe
         ? Math.round(json.audio_duration * 1000)
         : 0,
     session_id: String(json?.session_id ?? ""),
-    request_time_ms:
-      typeof json?.request_time_ms === "number" ? json.request_time_ms : 0,
-    language_code: json?.language_code,
+    request_time_ms: typeof json?.request_time_ms === "number" ? json.request_time_ms : 0,
+    language_code: json?.language_code ?? null,
     region,
     endpoint,
   };

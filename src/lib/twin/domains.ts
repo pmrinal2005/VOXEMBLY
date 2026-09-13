@@ -10,7 +10,7 @@ export const DOMAINS: Domain[] = [
     id: "founder",
     label: "Founder",
     icon: "Rocket",
-    basePrompt:
+    base_prompt:
       "Startup founder dictating product strategy, fundraising, and team updates.",
     keyterms: [
       "roadmap",
@@ -30,7 +30,7 @@ export const DOMAINS: Domain[] = [
     id: "researcher",
     label: "Researcher",
     icon: "Microscope",
-    basePrompt:
+    base_prompt:
       "Academic researcher dictating hypotheses, citations, and experiment notes.",
     keyterms: [
       "hypothesis",
@@ -49,7 +49,7 @@ export const DOMAINS: Domain[] = [
     id: "clinician",
     label: "Clinician",
     icon: "Stethoscope",
-    basePrompt:
+    base_prompt:
       "Clinician dictating a differential diagnosis, medications, and follow-up plan.",
     keyterms: [
       "differential",
@@ -68,7 +68,7 @@ export const DOMAINS: Domain[] = [
     id: "engineer",
     label: "Engineer",
     icon: "Code",
-    basePrompt:
+    base_prompt:
       "Software engineer dictating architecture decisions, PRs, and bug notes.",
     keyterms: [
       "refactor",
@@ -87,7 +87,7 @@ export const DOMAINS: Domain[] = [
     id: "student",
     label: "Student",
     icon: "GraduationCap",
-    basePrompt:
+    base_prompt:
       "Student dictating lecture notes, assignment plans, and study reminders.",
     keyterms: [
       "syllabus",
@@ -104,7 +104,7 @@ export const DOMAINS: Domain[] = [
     id: "parent",
     label: "Parent",
     icon: "Heart",
-    basePrompt:
+    base_prompt:
       "Parent dictating family logistics, reminders, and memorable moments.",
     keyterms: [
       "pediatrician",

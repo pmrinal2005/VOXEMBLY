@@ -161,3 +161,103 @@ export function seededRandom(seed: string): () => number {
 export function titleCase(s: string): string {
   return s.replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+/** Format an epoch ms into a compact, absolute date/time (canonical name). */
+export function formatDateTime(ts: number): string {
+  return fmtDateTime(ts);
+}
+
+/** Relative time string (alias of timeAgo — used by the Timeline). */
+export function relativeTime(ts: number): string {
+  return timeAgo(ts);
+}
+
+/** Truncate a string to `n` chars with an ellipsis. */
+export function truncate(s: string, n: number): string {
+  if (!s) return "";
+  return s.length <= n ? s : s.slice(0, Math.max(0, n - 1)).trimEnd() + "…";
+}
+
+/**
+ * Trigger a client-side download of text/blob content. No-op on the server.
+ * Used to export ICS calendar files and DMR / settings JSON.
+ */
+export function download(filename: string, content: string | Blob, mime = "text/plain"): void {
+  if (typeof document === "undefined") return;
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Format a Date into the compact ICS UTC stamp (YYYYMMDDTHHMMSSZ). */
+function icsStamp(d: Date): string {
+  return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+/** Build a minimal RFC-5545 VCALENDAR from scheduled items (Executor / Scheduler). */
+export function buildICS(events: { title: string; iso: string; description?: string }[]): string {
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//VOXEMBLY//Thoughtform//EN"];
+  for (const e of events) {
+    const start = new Date(e.iso);
+    if (Number.isNaN(start.getTime())) continue;
+    const end = new Date(start.getTime() + 30 * 60_000);
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${uid("vox")}@voxembly`,
+      `DTSTAMP:${icsStamp(new Date())}`,
+      `DTSTART:${icsStamp(start)}`,
+      `DTEND:${icsStamp(end)}`,
+      `SUMMARY:${(e.title || "Thoughtform").replace(/\n/g, " ")}`,
+      ...(e.description ? [`DESCRIPTION:${e.description.replace(/\n/g, " ")}`] : []),
+      "END:VEVENT",
+    );
+  }
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
+
+export type DiffOp = { type: "keep" | "add" | "remove"; text: string };
+
+/**
+ * A tiny word-level diff (LCS) between the raw transcript and the polished text.
+ * Powers the Diff Ribbon — judges literally watch the fillers strike through.
+ */
+export function wordDiff(raw: string, polished: string): DiffOp[] {
+  const a = (raw || "").trim().split(/\s+/).filter(Boolean);
+  const b = (polished || "").trim().split(/\s+/).filter(Boolean);
+  const n = a.length;
+  const m = b.length;
+  const norm = (w: string) => w.toLowerCase().replace(/[^a-z0-9']/g, "");
+  // LCS table
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = norm(a[i]) === norm(b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (norm(a[i]) === norm(b[j])) {
+      ops.push({ type: "keep", text: b[j] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ type: "remove", text: a[i] });
+      i++;
+    } else {
+      ops.push({ type: "add", text: b[j] });
+      j++;
+    }
+  }
+  while (i < n) ops.push({ type: "remove", text: a[i++] });
+  while (j < m) ops.push({ type: "add", text: b[j++] });
+  return ops;
+}

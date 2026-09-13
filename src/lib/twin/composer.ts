@@ -8,13 +8,13 @@
 // smarter with every utterance.
 // ============================================================================
 
-import type { ComposedContext, Graph, Profile, Thoughtform } from "@/lib/types";
+import type { ComposedContext, DictationConfig, Graph, Profile, Thoughtform } from "@/lib/types";
 import { clampKeyterms, clampPrompt } from "@/lib/dictation/client";
 import { rankedLabels } from "@/lib/twin/graph";
-import { domainById } from "@/lib/twin/domains";
+import { DOMAINS, domainById, languageLabel } from "@/lib/twin/domains";
 import { cosine } from "@/lib/utils";
 
-export { domainById };
+export { DOMAINS, domainById, languageLabel };
 
 export interface ComposeInput {
   profile: Profile;
@@ -26,52 +26,45 @@ export interface ComposeInput {
 /**
  * Compose the next dictation context from memory.
  *   prompt   = domain base + active people + recent topic (natural sentence)
- *   keyterms = domain vocab → graph proper nouns → recent entities
+ *   keyterms = domain vocab → graph proper nouns → recent entities → acronyms
  */
 export function compose(input: ComposeInput): ComposedContext {
   const { profile, graph, thoughtforms, queryEmbedding } = input;
 
-  // ---- prompt (natural language scene-setting) ----
+  /* ---- prompt (natural-language scene-setting) ---- */
   const parts: string[] = [];
-  const domains = profile.domains.map(domainById).filter(Boolean);
-  if (domains.length) {
-    parts.push(domains.map((d) => d!.basePrompt).join(" "));
-  }
+  const domains = profile.domains.map(domainById).filter(Boolean) as NonNullable<ReturnType<typeof domainById>>[];
+  if (domains.length) parts.push(domains.map((d) => d.base_prompt).join(" "));
 
   // active people (Person nodes with recent activity)
-  const people = graph.nodes
-    .filter((n) => n.kind === "Person")
-    .sort((a, b) => b.valid_from - a.valid_from)
+  const people = Object.values(graph.nodes)
+    .filter((n) => n.type === "Person" && n.valid_to == null)
+    .sort((a, b) => b.lastSeen - a.lastSeen)
     .slice(0, 3)
     .map((n) => n.label);
   if (people.length) parts.push(`Active people: ${people.join(", ")}.`);
 
   // last topic from the most recent thoughtform
-  const recent = [...thoughtforms].sort((a, b) => b.createdAt - a.createdAt);
-  if (recent[0]) {
-    const t = recent[0].polished_text.slice(0, 60);
-    parts.push(`Last topic: ${t}.`);
-  }
+  const recent = [...thoughtforms].sort((a, b) => b.created_at - a.created_at);
+  if (recent[0]) parts.push(`Last topic: ${recent[0].compiled.polished_text.slice(0, 60)}.`);
 
   // language hint
   const langNote =
-    profile.secondaryLanguages.length > 0
-      ? `Language: ${profile.primaryLanguage} with occasional ${profile.secondaryLanguages.join("/")}.`
-      : `Language: ${profile.primaryLanguage}.`;
+    profile.secondary_languages.length > 0
+      ? `Language: ${languageLabel(profile.primary_language)} with occasional ${profile.secondary_languages
+          .map(languageLabel)
+          .join("/")}.`
+      : `Language: ${languageLabel(profile.primary_language)}.`;
   parts.push(langNote);
 
   const prompt = clampPrompt(parts.join(" "));
 
-  // ---- keyterms (priority-ordered) ----
+  /* ---- keyterms (priority-ordered) ---- */
   const keyterms: string[] = [];
-
   // 1) pinned domain vocab
-  for (const d of domains) keyterms.push(...(d!.keyterms || []));
-
-  // 2) graph proper nouns (Person/Project/Entity), ranked by degree+recency
-  const ranked = rankedLabels(graph, 200);
-  keyterms.push(...ranked);
-
+  for (const d of domains) keyterms.push(...(d.keyterms || []));
+  // 2) graph proper nouns ranked by degree × mentions × recency
+  keyterms.push(...rankedLabels(graph, 200));
   // 3) relevance-retrieved entities from similar past thoughtforms
   if (queryEmbedding && queryEmbedding.length) {
     const scored = thoughtforms
@@ -79,21 +72,32 @@ export function compose(input: ComposeInput): ComposedContext {
       .map((t) => ({ t, s: cosine(queryEmbedding, t.embedding!) }))
       .sort((a, b) => b.s - a.s)
       .slice(0, 20);
-    for (const { t } of scored) {
-      for (const e of t.entities) keyterms.push(e.name);
-    }
+    for (const { t } of scored) for (const e of t.compiled.entities) keyterms.push(e.name);
   } else {
-    // fallback: recent thoughtform entities
-    for (const t of recent.slice(0, 10)) {
-      for (const e of t.entities) keyterms.push(e.name);
-    }
+    for (const t of recent.slice(0, 10)) for (const e of t.compiled.entities) keyterms.push(e.name);
   }
+  // 4) the user's private acronym list
+  keyterms.push(...(profile.private_acronyms || []));
 
   const keyterms_prompt = clampKeyterms(keyterms);
 
-  // ---- language code (omit for multilingual auto-detect) ----
-  const language_code =
-    profile.secondaryLanguages.length > 0 ? undefined : profile.primaryLanguage;
+  // language_code — omit (null) for multilingual code-switch, else primary
+  const language_code = profile.secondary_languages.length > 0 ? null : profile.primary_language;
 
-  return { prompt, keyterms_prompt, language_code };
+  const config: DictationConfig = {
+    prompt,
+    keyterms_prompt,
+    language_code,
+    timestamps: profile.latency_mode === "max_accuracy",
+  };
+
+  return {
+    config,
+    stats: {
+      prompt_words: prompt ? prompt.split(/\s+/).filter(Boolean).length : 0,
+      keyterms: keyterms_prompt.length,
+      keyterms_chars: keyterms_prompt.join(",").length,
+      context_turns: Math.min(recent.length, 10),
+    },
+  };
 }
