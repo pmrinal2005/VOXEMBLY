@@ -26,7 +26,8 @@ import { rankedLabels } from "@/lib/twin/graph";
 import { domainById } from "@/lib/twin/composer";
 import * as store from "@/lib/store/db";
 import { cn, formatMs, shortHash, uid } from "@/lib/utils";
-import { Badge, Button, Card, CardBody, CardHeader, CardTitle, Empty, Hint, Kbd, Modal, Spinner, Stat } from "@/components/ui";
+import { Badge, Button, Empty, Hint, Kbd, Modal, Spinner } from "@/components/ui";
+import { Bento, BentoCard, Dock, Drawer, Icon, MobileTabBar, Sidebar, type NavItem } from "@/components/shell";
 import { Orb, Waveform, type OrbPhase } from "@/components/orb";
 import { LatencyDial } from "@/components/telemetry";
 import { TwinCanvas } from "@/components/twin-canvas";
@@ -36,6 +37,15 @@ import { ThoughtformPanel } from "@/components/thoughtform-panel";
 import { Toasts } from "@/components/toasts";
 import { Onboarding } from "@/components/onboarding";
 import { SettingsModal } from "@/components/settings";
+
+/**
+ * The four Studio surfaces. On xl they are all mounted simultaneously; below xl they time-share the
+ * viewport and `surface` decides which one is showing.
+ */
+type SurfaceId = "commits" | "twin" | "thoughtform" | "timeline";
+
+/** xl — the breakpoint at which the full sidebar + bento + docked timeline all fit at once. */
+const DESKTOP_QUERY = "(min-width: 1280px)";
 
 export function Studio() {
   /* ───────── store ───────── */
@@ -80,6 +90,15 @@ export function Studio() {
   const [usePCM, setUsePCM] = React.useState(false);
   const [health, setHealth] = React.useState<{ degraded: string[]; dictation?: { configured: boolean } } | null>(null);
 
+  /* ───────── responsive shell state ───────── */
+  // `isDesktop` starts false so the first server/client paint agrees (no hydration mismatch); the
+  // matchMedia effect below promotes it on xl viewports.
+  const [isDesktop, setIsDesktop] = React.useState(false);
+  const [surface, setSurface] = React.useState<SurfaceId>("twin");
+  const [navOpen, setNavOpen] = React.useState(false);
+  const [railCollapsed, setRailCollapsed] = React.useState(false);
+  const [timelineOpen, setTimelineOpen] = React.useState(true);
+
   const recorderRef = React.useRef<PushToTalkRecorder | null>(null);
   const keyupAtRef = React.useRef(0);
   const spaceHeld = React.useRef(false);
@@ -88,11 +107,44 @@ export function Studio() {
   const selectedTf = React.useMemo(() => thoughtforms.find((t) => t.commit_hash === selected) ?? null, [thoughtforms, selected]);
   const visible = useTwin((s) => s.visibleThoughtforms)();
 
+  /**
+   * Switch surface. Below xl this is the only way to change what's on screen, so it also closes the
+   * drawer — otherwise tapping a nav item would leave the overlay covering the surface it selected.
+   */
+  const goto = React.useCallback((id: SurfaceId) => {
+    setSurface(id);
+    setNavOpen(false);
+  }, []);
+
   /* ───────── boot ───────── */
 
   React.useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  /**
+   * Track the xl breakpoint. Above it the sidebar is persistent, every bento card is mounted and the
+   * timeline is a dock; below it the sidebar becomes a modal drawer and the cards time-share via the
+   * tab bar. Collapsing to an icon rail is the sensible default on the narrower desktop sizes.
+   */
+  React.useEffect(() => {
+    const mq = window.matchMedia(DESKTOP_QUERY);
+    const apply = (matches: boolean) => {
+      setIsDesktop(matches);
+      // Leaving desktop closes the drawer; entering it retires the drawer entirely.
+      if (matches) setNavOpen(false);
+      else setRailCollapsed(false);
+    };
+    apply(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => apply(e.matches);
+    mq.addEventListener("change", onChange);
+
+    // A short viewport (landscape phone / small laptop) starts with the timeline dock collapsed so
+    // the Twin canvas keeps usable height.
+    if (window.innerHeight < 760) setTimelineOpen(false);
+
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   React.useEffect(() => {
     fetch("/api/health")
@@ -616,23 +668,240 @@ export function Studio() {
   const liveEdges = Object.values(graph.edges).filter((e) => e.valid_to === null);
   const nodes = Object.values(graph.nodes);
   const dictationOff = health?.dictation?.configured === false;
+  const invalidated = Object.values(graph.edges).length - liveEdges.length;
+
+  /**
+   * The four Studio surfaces. On xl they are all on screen at once (sidebar + bento + dock).
+   * Below xl they time-share: the mobile tab bar and the sidebar nav both drive `surface`.
+   */
+  const NAV: NavItem[] = [
+    { id: "commits", label: "Commits", icon: "commits", badge: visible.length, active: surface === "commits", onSelect: () => goto("commits") },
+    { id: "twin", label: "Cognitive Twin", icon: "twin", badge: nodes.length, active: surface === "twin", onSelect: () => goto("twin") },
+    { id: "thoughtform", label: "Thoughtform", icon: "sparkle", active: surface === "thoughtform", onSelect: () => goto("thoughtform") },
+    { id: "timeline", label: "Timeline", icon: "timeline", badge: Object.keys(branches).length, active: surface === "timeline", onSelect: () => goto("timeline") },
+  ];
+
+  /* The commits list is rendered in the sidebar on xl and as a bento card below xl — one source. */
+  const commitsList = (
+    <>
+      {visible.length === 0 ? (
+        <Empty title="No Thoughtforms yet" hint="Hold Space (or the Orb) and speak for 5–120 seconds. Your utterance returns in ~134 ms and becomes a typed commit." />
+      ) : (
+        <ul className="divide-y divide-border/40">
+          {visible.map((tf) => (
+            <li key={tf.commit_hash}>
+              <button
+                type="button"
+                onClick={() => {
+                  useTwin.getState().select(tf.commit_hash);
+                  setTranslation(null);
+                  if (!isDesktop) goto("thoughtform");
+                }}
+                aria-current={selected === tf.commit_hash ? "true" : undefined}
+                className={cn(
+                  "w-full px-3 py-2.5 text-left transition-colors hover:bg-secondary/50",
+                  selected === tf.commit_hash && "bg-secondary/70",
+                )}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Badge tone="neutral">{tf.compiled.intent}</Badge>
+                  <code className="font-mono text-[10px] text-muted-foreground">{shortHash(tf.commit_hash)}</code>
+                  <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+                    {tf.trace.request_time_ms == null ? "—" : `${Math.round(tf.trace.request_time_ms)}ms`}
+                  </span>
+                </div>
+                <p className="mt-1 truncate text-sm font-medium">{tf.compiled.title}</p>
+                <p className="truncate text-[11px] text-muted-foreground">{tf.compiled.polished_text}</p>
+                {tf.agent_runs.length > 0 && (
+                  <div className="mt-1 flex gap-1" aria-label={`${tf.agent_runs.length} agent runs`}>
+                    {tf.agent_runs.map((r) => (
+                      <span key={r.id} className="text-[10px]" title={`${AGENT_UI[r.agent]?.name}: ${r.status}`} aria-hidden="true">
+                        {AGENT_UI[r.agent]?.emoji}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+
+  const commitActions = (
+    <>
+      <Button size="sm" variant="ghost" onClick={() => setForkOpen(true)} title="Fork a branch from the selected commit">
+        Branch <Kbd>B</Kbd>
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setMergeOpen(true)} title="Merge a branch into the current one">
+        Merge <Kbd>M</Kbd>
+      </Button>
+    </>
+  );
+
+  /* The Prompt Composer preview — the bi-directional memory↔dictation loop, made visible. */
+  const composerPreview = (
+    <>
+      <Hint text="Composed live from your Twin before each dictation: a ≤50-word description of the audio plus exact-spelling keyterms ranked by recency × mentions × degree. This is what makes accuracy compound.">
+        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">next dictation context ⓘ</h3>
+      </Hint>
+      {composedPreview ? (
+        <div className="mt-1 space-y-1">
+          <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">{composedPreview.config.prompt}</p>
+          <div className="flex flex-wrap gap-1">
+            {(composedPreview.config.keyterms_prompt ?? []).slice(0, 8).map((k) => (
+              <Badge key={k} tone="violet">
+                {k}
+              </Badge>
+            ))}
+            {(composedPreview.config.keyterms_prompt?.length ?? 0) > 8 && (
+              <Badge tone="neutral">+{(composedPreview.config.keyterms_prompt?.length ?? 0) - 8}</Badge>
+            )}
+          </div>
+          <p className="font-mono text-[10px] text-muted-foreground">
+            {composedPreview.stats.prompt_words}w prompt · {composedPreview.stats.keyterms} terms / {composedPreview.stats.keyterms_chars}ch ·{" "}
+            {composedPreview.stats.context_turns} ctx turns
+          </p>
+        </div>
+      ) : (
+        <p className="mt-1 text-[11px] text-muted-foreground">Composed on key-down from your graph + recent Thoughtforms.</p>
+      )}
+    </>
+  );
+
+  const twinStats = (
+    <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+      <span>{nodes.length} nodes</span>
+      <span aria-hidden="true">·</span>
+      <span>{liveEdges.length} live</span>
+      <span aria-hidden="true" className="hidden sm:inline">
+        ·
+      </span>
+      <span className="hidden sm:inline">{invalidated} invalidated</span>
+    </div>
+  );
+
+  const timelinePanel = (
+    <Timeline
+      thoughtforms={thoughtforms}
+      branches={branches}
+      currentBranch={currentBranch}
+      checkout={checkout}
+      selected={selected}
+      onCheckout={(h) => {
+        const r = useTwin.getState().checkoutRef(h);
+        if (r.ok) toast("success", "Time travelled", r.message);
+      }}
+      onSelect={(h) => {
+        useTwin.getState().select(h);
+        setTranslation(null);
+      }}
+      onReturnToHead={() => {
+        useTwin.getState().returnToHead();
+        toast("info", "Returned to HEAD");
+      }}
+      onSwitchBranch={(n) => {
+        const r = useTwin.getState().switchBranch(n);
+        toast(r.ok ? "success" : "warn", r.message);
+      }}
+    />
+  );
+
+  const thoughtformPanel = (
+    <ThoughtformPanel
+      tf={selectedTf}
+      publishing={publishing}
+      translating={translating}
+      translation={translation}
+      onConvene={() => selectedTf && void runCouncil(selectedTf)}
+      onPublish={() => selectedTf && void doPublish(selectedTf)}
+      onFork={() => setForkOpen(true)}
+      onTranslate={(t) => void doTranslate(t)}
+    />
+  );
+
+  /**
+   * The Orb dock. Docked in the content column on xl; on smaller screens it floats just above the
+   * mobile tab bar so Push-to-Think stays one thumb away regardless of which surface is showing.
+   */
+  const orbDock = (
+    <div className="flex items-end justify-center gap-4 sm:gap-6">
+      <div className="hidden w-28 lg:block xl:w-32">{peaks.length > 0 && <Waveform peaks={peaks} tone={phase === "recording" ? "cyan" : "violet"} />}</div>
+      <Orb
+        phase={phase}
+        level={level}
+        elapsedMs={elapsed}
+        confidence={selectedTf?.confidence ?? null}
+        ambient={ambient}
+        disabled={dictationOff}
+        onStart={() => void onStart()}
+        onStop={onStop}
+        onCancel={onCancel}
+      />
+      <div className="hidden w-28 text-right text-[10px] leading-relaxed text-muted-foreground lg:block xl:w-32">
+        <p>
+          hold <Kbd>Space</Kbd> or the Orb
+        </p>
+        <p>
+          <Kbd>Esc</Kbd> cancels
+        </p>
+        <p>
+          <Kbd>A</Kbd> ambient · <Kbd>C</Kbd> council
+        </p>
+      </div>
+    </div>
+  );
+
+  const sidebarBody = (
+    <Sidebar
+      collapsed={railCollapsed}
+      onToggleCollapsed={() => setRailCollapsed((v) => !v)}
+      nav={NAV}
+      inDrawer={!isDesktop}
+      onClose={() => setNavOpen(false)}
+      header={
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Commits <span className="font-mono normal-case">({visible.length})</span>
+          </h2>
+          <div className="flex gap-1">{commitActions}</div>
+        </div>
+      }
+      footer={composerPreview}
+    >
+      {commitsList}
+    </Sidebar>
+  );
+
+  /** Which bento cards a given surface shows below xl. On xl everything is visible at once. */
+  const show = (id: SurfaceId) => isDesktop || surface === id;
 
   return (
     <>
       <div className="grid-bg flex h-dvh flex-col overflow-hidden">
-        {/* ───── header ───── */}
-        <header className="flex shrink-0 items-center gap-3 border-b border-border/60 px-4 py-2">
-          <div className="flex items-center gap-2">
-            <span className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-vox-cyan to-vox-violet text-xs font-black text-background" aria-hidden="true">
+        {/* ───── topbar ───── */}
+        <header className="flex shrink-0 items-center gap-2 border-b border-border/60 px-2 py-2 sm:gap-3 sm:px-4">
+          {!isDesktop && (
+            <Button variant="ghost" size="icon" onClick={() => setNavOpen(true)} aria-label="Open navigation" aria-expanded={navOpen}>
+              <Icon name="menu" />
+            </Button>
+          )}
+
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-vox-cyan to-vox-violet text-xs font-black text-background"
+              aria-hidden="true"
+            >
               V
             </span>
-            <div className="leading-none">
-              <h1 className="text-sm font-bold tracking-tight">VOXEMBLY</h1>
-              <p className="text-[10px] text-muted-foreground">Voice is the new compiler.</p>
+            <div className="min-w-0 leading-none">
+              <h1 className="truncate text-sm font-bold tracking-tight">VOXEMBLY</h1>
+              <p className="hidden truncate text-[10px] text-muted-foreground sm:block">Voice is the new compiler.</p>
             </div>
           </div>
 
-          <div className="ml-2 hidden items-center gap-1.5 md:flex">
+          <div className="ml-1 hidden items-center gap-1.5 lg:flex">
             <Badge tone="cyan">universal-3-5-pro</Badge>
             <Badge tone={online ? "emerald" : "rose"}>{online ? "online" : "offline"}</Badge>
             {drafts.length > 0 && <Badge tone="amber">{drafts.length} queued</Badge>}
@@ -640,29 +909,51 @@ export function Studio() {
             {checkout && <Badge tone="amber">detached</Badge>}
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
-            <LatencyDial
-              requestTimeMs={lastTrace?.request_time_ms ?? null}
-              proxyMs={lastTrace?.proxy ?? null}
-              clientMs={lastTrace?.client ?? null}
-              warmed={lastTrace?.warmed ?? false}
-              region={lastTrace?.region ?? profile.region}
-            />
-            <Button size="sm" variant={ambient ? "primary" : "outline"} onClick={() => void setAmbientMode(!ambient)} aria-pressed={ambient}>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-3">
+            {/* The Latency Dial is the stealth flex — keep it on screen from md up. */}
+            <div className="hidden md:block">
+              <LatencyDial
+                requestTimeMs={lastTrace?.request_time_ms ?? null}
+                proxyMs={lastTrace?.proxy ?? null}
+                clientMs={lastTrace?.client ?? null}
+                warmed={lastTrace?.warmed ?? false}
+                region={lastTrace?.region ?? profile.region}
+              />
+            </div>
+            {/* Below md the dial collapses to just the number so it never crowds the controls. */}
+            <span className="font-mono text-[11px] text-vox-cyan md:hidden" title="AssemblyAI request_time_ms">
+              {lastTrace?.request_time_ms == null ? "—" : `${Math.round(lastTrace.request_time_ms)}ms`}
+            </span>
+
+            <Button
+              size="sm"
+              variant={ambient ? "primary" : "outline"}
+              onClick={() => void setAmbientMode(!ambient)}
+              aria-pressed={ambient}
+              className="hidden sm:inline-flex"
+            >
               Ambient <Kbd>A</Kbd>
             </Button>
+            <Button
+              size="icon"
+              variant={ambient ? "primary" : "ghost"}
+              onClick={() => void setAmbientMode(!ambient)}
+              aria-pressed={ambient}
+              aria-label="Toggle ambient mode"
+              className="sm:hidden"
+            >
+              <Icon name="wave" />
+            </Button>
+
             <Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Settings, keyboard shortcuts and memory benchmark">
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-              </svg>
+              <Icon name="settings" />
             </Button>
           </div>
         </header>
 
         {/* degraded banner */}
         {(dictationOff || micError) && (
-          <div role="alert" className="shrink-0 border-b border-vox-amber/40 bg-vox-amber/10 px-4 py-1.5 text-[11px] text-vox-amber">
+          <div role="alert" className="shrink-0 border-b border-vox-amber/40 bg-vox-amber/10 px-3 py-1.5 text-[11px] text-vox-amber sm:px-4">
             {dictationOff && (
               <>
                 <strong>ASSEMBLYAI_API_KEY is not configured.</strong> Add it to <code className="font-mono">.env.local</code> and restart — dictation is the
@@ -673,197 +964,129 @@ export function Studio() {
           </div>
         )}
 
-        {/* ───── three panels ───── */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(280px,1fr)_minmax(420px,1.3fr)_minmax(320px,1fr)]">
-          {/* left: commits */}
-          <section aria-label="Thoughtform commits" className="flex min-h-0 flex-col border-r border-border/60">
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Commits <span className="font-mono normal-case">({visible.length})</span>
-              </h2>
-              <div className="flex gap-1">
-                <Button size="sm" variant="ghost" onClick={() => setForkOpen(true)} title="Fork a branch from the selected commit">
-                  Branch <Kbd>B</Kbd>
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setMergeOpen(true)} title="Merge a branch into the current one">
-                  Merge <Kbd>M</Kbd>
-                </Button>
-              </div>
-            </div>
-            <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto">
-              {visible.length === 0 ? (
-                <Empty
-                  title="No Thoughtforms yet"
-                  hint="Hold Space (or the Orb) and speak for 5–120 seconds. Your utterance returns in ~134 ms and becomes a typed commit."
-                />
-              ) : (
-                <ul className="divide-y divide-border/40">
-                  {visible.map((tf) => (
-                    <li key={tf.commit_hash}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          useTwin.getState().select(tf.commit_hash);
-                          setTranslation(null);
-                        }}
-                        aria-current={selected === tf.commit_hash ? "true" : undefined}
-                        className={cn(
-                          "w-full px-3 py-2.5 text-left transition-colors hover:bg-secondary/50",
-                          selected === tf.commit_hash && "bg-secondary/70",
-                        )}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <Badge tone="neutral">{tf.compiled.intent}</Badge>
-                          <code className="font-mono text-[10px] text-muted-foreground">{shortHash(tf.commit_hash)}</code>
-                          <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
-                            {tf.trace.request_time_ms == null ? "—" : `${Math.round(tf.trace.request_time_ms)}ms`}
-                          </span>
-                        </div>
-                        <p className="mt-1 truncate text-sm font-medium">{tf.compiled.title}</p>
-                        <p className="truncate text-[11px] text-muted-foreground">{tf.compiled.polished_text}</p>
-                        {tf.agent_runs.length > 0 && (
-                          <div className="mt-1 flex gap-1" aria-label={`${tf.agent_runs.length} agent runs`}>
-                            {tf.agent_runs.map((r) => (
-                              <span key={r.id} className="text-[10px]" title={`${AGENT_UI[r.agent]?.name}: ${r.status}`} aria-hidden="true">
-                                {AGENT_UI[r.agent]?.emoji}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+        {/* ───── sidebar + content ───── */}
+        <div className="flex min-h-0 flex-1">
+          {/* xl: persistent rail/sidebar. below xl: the same component inside a modal drawer. */}
+          {isDesktop && <div className="hidden shrink-0 xl:block">{sidebarBody}</div>}
 
-            {/* Prompt Composer preview — the bi-directional loop, visible */}
-            <div className="shrink-0 border-t border-border/60 px-3 py-2">
-              <Hint text="Composed live from your Twin before each dictation: a ≤50-word description of the audio plus exact-spelling keyterms ranked by recency × mentions × degree. This is what makes accuracy compound.">
-                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">next dictation context ⓘ</h3>
-              </Hint>
-              {composedPreview ? (
-                <div className="mt-1 space-y-1">
-                  <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">{composedPreview.config.prompt}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {(composedPreview.config.keyterms_prompt ?? []).slice(0, 8).map((k) => (
-                      <Badge key={k} tone="violet">
-                        {k}
-                      </Badge>
-                    ))}
-                    {(composedPreview.config.keyterms_prompt?.length ?? 0) > 8 && (
-                      <Badge tone="neutral">+{(composedPreview.config.keyterms_prompt?.length ?? 0) - 8}</Badge>
-                    )}
-                  </div>
-                  <p className="font-mono text-[10px] text-muted-foreground">
-                    {composedPreview.stats.prompt_words}w prompt · {composedPreview.stats.keyterms} terms /{" "}
-                    {composedPreview.stats.keyterms_chars}ch · {composedPreview.stats.context_turns} ctx turns
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-1 text-[11px] text-muted-foreground">Composed on key-down from your graph + recent Thoughtforms.</p>
-              )}
-            </div>
-          </section>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <main id="main" className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2 sm:p-3">
+              <Bento className="min-h-full auto-rows-min xl:h-full xl:auto-rows-auto">
+                {/* Commits — a bento card only below xl, where the sidebar isn't holding it. */}
+                {!isDesktop && surface === "commits" && (
+                  <BentoCard
+                    span={12}
+                    title={
+                      <>
+                        Commits <span className="font-mono normal-case">({visible.length})</span>
+                      </>
+                    }
+                    actions={commitActions}
+                    padded={false}
+                    scroll
+                    className="min-h-[46vh]"
+                    footer={composerPreview}
+                  >
+                    {commitsList}
+                  </BentoCard>
+                )}
 
-          {/* centre: twin canvas + orb */}
-          <section aria-label="Cognitive Twin" className="relative flex min-h-0 flex-col border-r border-border/60">
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cognitive Twin</h2>
-              <div className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
-                <span>{nodes.length} nodes</span>
-                <span aria-hidden="true">·</span>
-                <span>{liveEdges.length} live edges</span>
-                <span aria-hidden="true">·</span>
-                <span>{Object.values(graph.edges).length - liveEdges.length} invalidated</span>
-              </div>
-            </div>
+                {/* Cognitive Twin canvas */}
+                {show("twin") && (
+                  <BentoCard
+                    span={8}
+                    title="Cognitive Twin"
+                    subtitle="temporal knowledge graph · click a node to focus"
+                    actions={twinStats}
+                    padded={false}
+                    className="min-h-[46vh] xl:min-h-0"
+                    bodyClassName="relative"
+                  >
+                    <TwinCanvas
+                      nodes={nodes}
+                      edges={Object.values(graph.edges)}
+                      highlight={highlight}
+                      reduceMotion={profile.reduce_motion}
+                      selectedNode={selectedNode}
+                      onSelectNode={setSelectedNode}
+                    />
+                  </BentoCard>
+                )}
 
-            <div className="relative min-h-0 flex-1">
-              <TwinCanvas
-                nodes={nodes}
-                edges={Object.values(graph.edges)}
-                highlight={highlight}
-                reduceMotion={profile.reduce_motion}
-                selectedNode={selectedNode}
-                onSelectNode={setSelectedNode}
-              />
-            </div>
+                {/* Selected Thoughtform */}
+                {show("thoughtform") && (
+                  <BentoCard
+                    span={4}
+                    title="Thoughtform"
+                    subtitle={selectedTf ? shortHash(selectedTf.commit_hash) : "nothing selected"}
+                    padded={false}
+                    scroll
+                    className="min-h-[46vh] xl:min-h-0"
+                  >
+                    {thoughtformPanel}
+                  </BentoCard>
+                )}
 
-            {/* Orb dock */}
-            <div className="shrink-0 border-t border-border/60 px-3 py-3">
-              <div className="flex items-end justify-center gap-6">
-                <div className="hidden w-32 sm:block">
-                  {peaks.length > 0 && <Waveform peaks={peaks} tone={phase === "recording" ? "cyan" : "violet"} />}
-                </div>
-                <Orb
-                  phase={phase}
-                  level={level}
-                  elapsedMs={elapsed}
-                  confidence={selectedTf?.confidence ?? null}
-                  ambient={ambient}
-                  disabled={dictationOff}
-                  onStart={() => void onStart()}
-                  onStop={onStop}
-                  onCancel={onCancel}
-                />
-                <div className="hidden w-32 text-right text-[10px] leading-relaxed text-muted-foreground sm:block">
-                  <p>
-                    hold <Kbd>Space</Kbd> or the Orb
-                  </p>
-                  <p>
-                    <Kbd>Esc</Kbd> cancels
-                  </p>
-                  <p>
-                    <Kbd>A</Kbd> ambient · <Kbd>C</Kbd> council
-                  </p>
-                </div>
-              </div>
-            </div>
-          </section>
+                {/* Timeline — a full-width card on its own surface below xl; docked on xl. */}
+                {!isDesktop && surface === "timeline" && (
+                  <BentoCard span={12} title="Timeline" subtitle="commits · branches · time travel" padded={false} className="min-h-[46vh]">
+                    {timelinePanel}
+                  </BentoCard>
+                )}
 
-          {/* right: thoughtform detail */}
-          <section aria-label="Selected Thoughtform" className="flex min-h-0 flex-col" id="main">
-            <ThoughtformPanel
-              tf={selectedTf}
-              publishing={publishing}
-              translating={translating}
-              translation={translation}
-              onConvene={() => selectedTf && void runCouncil(selectedTf)}
-              onPublish={() => selectedTf && void doPublish(selectedTf)}
-              onFork={() => setForkOpen(true)}
-              onTranslate={(t) => void doTranslate(t)}
-            />
-          </section>
+                {/* Orb dock — inline on xl so it sits under the canvas. */}
+                {isDesktop && (
+                  <BentoCard span={12} className="shrink-0" bodyClassName="py-3">
+                    {orbDock}
+                  </BentoCard>
+                )}
+              </Bento>
+            </main>
+
+            {/* xl: the timeline is a collapsible dock so it never steals canvas height. */}
+            {isDesktop && (
+              <Dock
+                open={timelineOpen}
+                onToggle={() => setTimelineOpen((v) => !v)}
+                label="Timeline"
+                summary={
+                  <>
+                    {thoughtforms.length} commits · {Object.keys(branches).length} branches · on{" "}
+                    <code className="font-mono text-vox-cyan">{currentBranch}</code>
+                    {checkout && <> · detached at {shortHash(checkout)}</>}
+                  </>
+                }
+              >
+                {timelinePanel}
+              </Dock>
+            )}
+          </div>
         </div>
 
-        {/* ───── timeline ───── */}
-        <section aria-label="Commit timeline and time travel" className="h-[128px] shrink-0 border-t border-border/60">
-          <Timeline
-            thoughtforms={thoughtforms}
-            branches={branches}
-            currentBranch={currentBranch}
-            checkout={checkout}
-            selected={selected}
-            onCheckout={(h) => {
-              const r = useTwin.getState().checkoutRef(h);
-              if (r.ok) toast("success", "Time travelled", r.message);
-            }}
-            onSelect={(h) => {
-              useTwin.getState().select(h);
-              setTranslation(null);
-            }}
-            onReturnToHead={() => {
-              useTwin.getState().returnToHead();
-              toast("info", "Returned to HEAD");
-            }}
-            onSwitchBranch={(n) => {
-              const r = useTwin.getState().switchBranch(n);
-              toast(r.ok ? "success" : "warn", r.message);
-            }}
-          />
-        </section>
+        {/* ───── mobile: floating orb + tab bar ───── */}
+        {!isDesktop && (
+          <>
+            <div className="pointer-events-none fixed inset-x-0 bottom-[58px] z-30 flex justify-center pb-2" style={{ marginBottom: "env(safe-area-inset-bottom)" }}>
+              <div className="pointer-events-auto rounded-full border border-border/60 bg-card/85 px-4 py-2 shadow-2xl backdrop-blur-md">{orbDock}</div>
+            </div>
+            <MobileTabBar
+              value={surface}
+              onChange={(id) => goto(id as SurfaceId)}
+              items={[
+                { id: "commits", label: "Commits", icon: "commits", badge: visible.length },
+                { id: "twin", label: "Twin", icon: "twin", badge: nodes.length },
+                { id: "thoughtform", label: "Thought", icon: "sparkle" },
+                { id: "timeline", label: "Timeline", icon: "timeline" },
+              ]}
+            />
+          </>
+        )}
       </div>
+
+      {/* drawer sidebar (below xl) */}
+      <Drawer open={navOpen && !isDesktop} onClose={() => setNavOpen(false)} label="Studio navigation">
+        {sidebarBody}
+      </Drawer>
 
       {/* ───── modals ───── */}
       <CouncilModal

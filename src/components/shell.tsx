@@ -3,14 +3,17 @@
 /**
  * The VOXEMBLY app shell — responsive chrome for the Studio.
  *
- * Layout contract:
- *   • ≥1280px (xl) — collapsible sidebar rail + 12-column bento grid + docked timeline.
- *   • 1024–1280px (lg) — sidebar collapses to a 60px icon rail by default; bento reflows to 2 columns.
- *   • 768–1024px (md) — sidebar becomes an overlay drawer; bento stacks to a single wide column with
- *     the Twin canvas and detail panel side by side.
- *   • <768px (mobile) — drawer sidebar, single-column bento, and a bottom tab bar that swaps between
- *     the four surfaces (Commits / Twin / Thoughtform / Timeline). The Orb floats above the tab bar
- *     so Push-to-Think is always one thumb away.
+ * Layout contract. `xl` (1280px) is the single breakpoint that flips the shell between its two
+ * modes, and it is mirrored in JS by Studio's `isDesktop` (DESKTOP_QUERY). Both must agree: if the
+ * CSS hid the tab bar at a different width than the JS mounts the sidebar, the range between them
+ * would have neither. Hence `xl:hidden` here, not `lg:hidden`.
+ *
+ *   • ≥1280px (xl) — persistent collapsible sidebar + 12-column bento grid + docked timeline, all
+ *     four surfaces mounted at once.
+ *   • 768–1280px (md/lg) — sidebar becomes an overlay drawer reached from the topbar menu button;
+ *     bento is a 6-column grid, and the bottom tab bar swaps surfaces.
+ *   • <768px (mobile) — drawer sidebar, single-column bento, bottom tab bar. The Orb floats just
+ *     above the tab bar so Push-to-Think is always one thumb away.
  *
  * Accessibility: the drawer is a real modal dialog (focus trap, Escape, restore focus, inert
  * background), the rail buttons keep accessible names when their labels are visually hidden, the tab
@@ -29,21 +32,27 @@ import { Button } from "@/components/ui";
  */
 export function Bento({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn("grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-12", className)} {...props}>
+    <div className={cn("grid grid-cols-1 gap-3 md:grid-cols-6 xl:grid-cols-12", className)} {...props}>
       {children}
     </div>
   );
 }
 
+/**
+ * `span` is declared once per card in 12ths. Below xl the grid is 6 columns, so a span is halved
+ * (rounded up to a whole column) — and anything ≥8/12 goes full-width rather than leaving a runt
+ * column. Below md every card is full-width. Keeping the mapping here means a call site says
+ * "I want half the row" once instead of repeating breakpoint soup.
+ */
 const SPANS: Record<number, string> = {
-  3: "xl:col-span-3",
-  4: "xl:col-span-4",
-  5: "xl:col-span-5",
-  6: "xl:col-span-6",
-  7: "xl:col-span-7",
-  8: "xl:col-span-8",
-  9: "xl:col-span-9",
-  12: "md:col-span-2 xl:col-span-12",
+  3: "md:col-span-2 xl:col-span-3",
+  4: "md:col-span-3 xl:col-span-4",
+  5: "md:col-span-3 xl:col-span-5",
+  6: "md:col-span-3 xl:col-span-6",
+  7: "md:col-span-6 xl:col-span-7",
+  8: "md:col-span-6 xl:col-span-8",
+  9: "md:col-span-6 xl:col-span-9",
+  12: "md:col-span-6 xl:col-span-12",
 };
 
 export function BentoCard({
@@ -70,7 +79,8 @@ export function BentoCard({
   scroll?: boolean;
   bodyClassName?: string;
   as?: "section" | "div" | "article";
-} & React.HTMLAttributes<HTMLElement>) {
+  /* `title` is omitted from the HTML attrs: ours is a ReactNode heading, not the string tooltip. */
+} & Omit<React.HTMLAttributes<HTMLElement>, "title">) {
   return (
     <Tag
       className={cn(
@@ -346,7 +356,7 @@ export function Drawer({ open, onClose, label, children }: { open: boolean; onCl
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 lg:hidden">
+    <div className="fixed inset-0 z-50 xl:hidden">
       <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
       <div ref={ref} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1} className="absolute inset-y-0 left-0 animate-fade-up shadow-2xl">
         {children}
@@ -362,7 +372,7 @@ export function MobileTabBar({ items, value, onChange }: { items: { id: string; 
     <div
       role="tablist"
       aria-label="Studio surfaces"
-      className="flex shrink-0 items-stretch border-t border-border/60 bg-card/80 backdrop-blur-md lg:hidden"
+      className="flex shrink-0 items-stretch border-t border-border/60 bg-card/80 backdrop-blur-md xl:hidden"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
       {items.map((it) => {
