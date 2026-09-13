@@ -4,7 +4,6 @@ import { embed } from "@/lib/kernel/embeddings";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Embed text into a vector for semantic memory retrieval. */
 export async function POST(req: NextRequest) {
   let body: { text?: string };
   try {
@@ -14,6 +13,6 @@ export async function POST(req: NextRequest) {
   }
   const text = (body.text || "").trim();
   if (!text) return NextResponse.json({ error: "missing text" }, { status: 400 });
-  const { vector, source } = await embed(text);
-  return NextResponse.json({ vector, source, dim: vector.length });
+  const { vector, model } = await embed(text);
+  return NextResponse.json({ vector, model, dim: vector.length });
 }

@@ -1,22 +1,16 @@
 "use client";
 
-// ============================================================================
-// VOXEMBLY — Push-to-Talk recorder (CLIENT-SIDE).
-//
-// Captures mic audio via WebAudio, downsamples to 16 kHz mono, and encodes to
-// 16-bit PCM WAV — the format blessed by the Dictation API. Includes a simple
-// energy-based VAD trim (silence hangover) to cut leading/trailing silence,
-// standing in for the Silero-VAD-WASM path described in the plan.
-// ============================================================================
-
 import { LIMITS } from "@/lib/dictation/client";
 
 export interface CaptureResult {
   wav: Blob;
+  pcm: Blob;
+  samples: Float32Array;
   durationMs: number;
-  peaks: number[]; // downsampled waveform for visualization
   sampleRate: number;
-  tooShort: boolean;
+  peak: number;
+  rms: number;
+  silent: boolean;
 }
 
 const TARGET_RATE = 16000;
@@ -29,23 +23,29 @@ export class PushToTalkRecorder {
   private chunks: Float32Array[] = [];
   private recordingRate = 48000;
   private startedAt = 0;
-  private levelCb?: (level: number) => void;
+  private _recording = false;
+  private _ambient = false;
+  private _level = 0;
+  private silenceMs = 0;
+  private utteranceAcc: Float32Array[] = [];
+  private maxTimer: ReturnType<typeof setTimeout> | null = null;
 
-  get supported(): boolean {
-    return (
-      typeof navigator !== "undefined" &&
-      Boolean(navigator.mediaDevices?.getUserMedia) &&
-      (typeof AudioContext !== "undefined" ||
-        typeof (globalThis as any).webkitAudioContext !== "undefined")
-    );
+  onLevel?: (level: number) => void;
+  onMaxDuration?: () => void;
+  onUtterance?: (res: CaptureResult) => void;
+
+  get isRecording() {
+    return this._recording;
+  }
+  get elapsedMs() {
+    return this._recording ? Date.now() - this.startedAt : 0;
+  }
+  level() {
+    return this._level;
   }
 
-  onLevel(cb: (level: number) => void) {
-    this.levelCb = cb;
-  }
-
-  async start(): Promise<void> {
-    if (!this.supported) throw new Error("mic_unsupported");
+  async prepare(): Promise<void> {
+    if (this.stream && this.ctx) return;
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -54,68 +54,94 @@ export class PushToTalkRecorder {
         autoGainControl: true,
       },
     });
-    const Ctx =
-      (typeof AudioContext !== "undefined"
-        ? AudioContext
-        : (globalThis as any).webkitAudioContext) as typeof AudioContext;
+    const Ctx = (window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext) as typeof AudioContext;
     this.ctx = new Ctx();
     this.recordingRate = this.ctx.sampleRate;
     this.source = this.ctx.createMediaStreamSource(this.stream);
-    // ScriptProcessor is deprecated but universally supported and needs no
-    // worklet file — ideal for a zero-build, Vercel-friendly capture path.
     this.processor = this.ctx.createScriptProcessor(4096, 1, 1);
-    this.chunks = [];
-    this.startedAt = Date.now();
-
     this.processor.onaudioprocess = (e) => {
       const input = e.inputBuffer.getChannelData(0);
-      this.chunks.push(new Float32Array(input));
-      if (this.levelCb) {
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-        this.levelCb(Math.min(1, Math.sqrt(sum / input.length) * 4));
+      const copy = new Float32Array(input);
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < copy.length; i++) {
+        const v = Math.abs(copy[i]);
+        if (v > peak) peak = v;
+        sum += copy[i] * copy[i];
+      }
+      const rms = Math.sqrt(sum / copy.length);
+      this._level = Math.min(1, rms * 4);
+      this.onLevel?.(this._level);
+
+      if (!this._recording && !this._ambient) return;
+      this.chunks.push(copy);
+
+      if (this._ambient) {
+        this.utteranceAcc.push(copy);
+        const frameMs = (copy.length / this.recordingRate) * 1000;
+        if (rms < 0.012) this.silenceMs += frameMs;
+        else this.silenceMs = 0;
+        const accLen = this.utteranceAcc.reduce((a, c) => a + c.length, 0);
+        const accMs = (accLen / this.recordingRate) * 1000;
+        if ((this.silenceMs > 700 && accMs > 400) || accMs > 90_000) {
+          const merged = mergeChunks(this.utteranceAcc);
+          this.utteranceAcc = [];
+          this.silenceMs = 0;
+          const cap = finalize(merged, this.recordingRate);
+          if (!cap.silent && cap.durationMs >= LIMITS.minDurationMs) this.onUtterance?.(cap);
+        }
       }
     };
     this.source.connect(this.processor);
     this.processor.connect(this.ctx.destination);
+    if (this.ctx.state === "suspended") await this.ctx.resume();
   }
 
-  async stop(): Promise<CaptureResult> {
-    const durationMs = Date.now() - this.startedAt;
-    this.processor?.disconnect();
-    this.source?.disconnect();
-    this.stream?.getTracks().forEach((t) => t.stop());
-    if (this.ctx && this.ctx.state !== "closed") await this.ctx.close();
-
-    const merged = mergeChunks(this.chunks);
-    const down = downsample(merged, this.recordingRate, TARGET_RATE);
-    const trimmed = vadTrim(down, TARGET_RATE);
-    const wav = encodeWav(trimmed, TARGET_RATE);
-    const peaks = computePeaks(trimmed, 64);
-    const realDur = Math.round((trimmed.length / TARGET_RATE) * 1000);
-
+  start(): void {
     this.chunks = [];
-    this.ctx = null;
-    this.stream = null;
-
-    return {
-      wav,
-      durationMs: realDur || durationMs,
-      peaks,
-      sampleRate: TARGET_RATE,
-      tooShort: (realDur || durationMs) < LIMITS.MIN_MS,
-    };
+    this.startedAt = Date.now();
+    this._recording = true;
+    this.silenceMs = 0;
+    if (this.maxTimer) clearTimeout(this.maxTimer);
+    this.maxTimer = setTimeout(() => {
+      this.onMaxDuration?.();
+    }, LIMITS.maxDurationMs);
   }
 
-  cancel() {
+  stop(): CaptureResult | null {
+    this._recording = false;
+    if (this.maxTimer) {
+      clearTimeout(this.maxTimer);
+      this.maxTimer = null;
+    }
+    const merged = mergeChunks(this.chunks);
+    this.chunks = [];
+    if (!merged.length) return null;
+    return finalize(merged, this.recordingRate);
+  }
+
+  setAmbient(on: boolean) {
+    this._ambient = on;
+    this.utteranceAcc = [];
+    this.silenceMs = 0;
+    if (!on) this._recording = false;
+  }
+
+  dispose() {
+    this._recording = false;
+    this._ambient = false;
+    if (this.maxTimer) clearTimeout(this.maxTimer);
     try {
       this.processor?.disconnect();
       this.source?.disconnect();
       this.stream?.getTracks().forEach((t) => t.stop());
-      if (this.ctx && this.ctx.state !== "closed") this.ctx.close();
+      if (this.ctx && this.ctx.state !== "closed") void this.ctx.close();
     } catch {
       /* noop */
     }
+    this.ctx = null;
+    this.stream = null;
     this.chunks = [];
   }
 }
@@ -136,17 +162,13 @@ function downsample(buffer: Float32Array, from: number, to: number): Float32Arra
   const ratio = from / to;
   const newLen = Math.floor(buffer.length / ratio);
   const out = new Float32Array(newLen);
-  for (let i = 0; i < newLen; i++) {
-    const idx = Math.floor(i * ratio);
-    out[i] = buffer[idx];
-  }
+  for (let i = 0; i < newLen; i++) out[i] = buffer[Math.floor(i * ratio)];
   return out;
 }
 
-/** Energy-based VAD trim: drop leading/trailing silence, keep a hangover. */
 function vadTrim(buffer: Float32Array, rate: number): Float32Array {
   if (buffer.length === 0) return buffer;
-  const win = Math.floor(rate * 0.02); // 20ms windows
+  const win = Math.floor(rate * 0.02);
   const threshold = 0.008;
   let first = -1;
   let last = -1;
@@ -160,15 +182,12 @@ function vadTrim(buffer: Float32Array, rate: number): Float32Array {
       last = end;
     }
   }
-  if (first === -1) return buffer; // all quiet — keep as-is
-  const hang = Math.floor(rate * 0.2); // 200ms hangover
-  const s = Math.max(0, first - hang);
-  const e = Math.min(buffer.length, last + hang);
-  return buffer.slice(s, e);
+  if (first === -1) return buffer;
+  const hang = Math.floor(rate * 0.2);
+  return buffer.slice(Math.max(0, first - hang), Math.min(buffer.length, last + hang));
 }
 
-/** Encode Float32 mono samples into a 16-bit PCM WAV Blob. */
-export function encodeWav(samples: Float32Array, rate: number): Blob {
+function encodeWav(samples: Float32Array, rate: number): Blob {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
   const writeStr = (off: number, s: string) => {
@@ -179,8 +198,8 @@ export function encodeWav(samples: Float32Array, rate: number): Blob {
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, rate, true);
   view.setUint32(28, rate * 2, true);
   view.setUint16(32, 2, true);
@@ -196,9 +215,52 @@ export function encodeWav(samples: Float32Array, rate: number): Blob {
   return new Blob([view], { type: "audio/wav" });
 }
 
-/** Peaks for the waveform visualization. */
-export function computePeaks(samples: Float32Array, bins: number): number[] {
-  if (samples.length === 0) return new Array(bins).fill(0);
+function encodePcm(samples: Float32Array): Blob {
+  const buf = new ArrayBuffer(samples.length * 2);
+  const view = new DataView(buf);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buf], { type: "audio/pcm" });
+}
+
+function finalize(raw: Float32Array, fromRate: number): CaptureResult {
+  const down = downsample(raw, fromRate, TARGET_RATE);
+  const trimmed = vadTrim(down, TARGET_RATE);
+  let peak = 0;
+  let sum = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const v = Math.abs(trimmed[i]);
+    if (v > peak) peak = v;
+    sum += trimmed[i] * trimmed[i];
+  }
+  const rms = trimmed.length ? Math.sqrt(sum / trimmed.length) : 0;
+  const durationMs = Math.round((trimmed.length / TARGET_RATE) * 1000);
+  return {
+    wav: encodeWav(trimmed, TARGET_RATE),
+    pcm: encodePcm(trimmed),
+    samples: trimmed,
+    durationMs,
+    sampleRate: TARGET_RATE,
+    peak,
+    rms,
+    silent: peak < 0.01,
+  };
+}
+
+export function waveformPeaks(samples: Float32Array | number, bins = 64): number[] {
+  if (typeof samples === "number") {
+    const out: number[] = [];
+    let s = samples;
+    for (let i = 0; i < bins; i++) {
+      s = (s * 9301 + 49297) % 233280;
+      const r = s / 233280;
+      out.push(0.15 + r * 0.85 * Math.sin((i / bins) * Math.PI));
+    }
+    return out;
+  }
+  if (!samples.length) return new Array(bins).fill(0);
   const size = Math.floor(samples.length / bins) || 1;
   const peaks: number[] = [];
   for (let b = 0; b < bins; b++) {
@@ -209,17 +271,4 @@ export function computePeaks(samples: Float32Array, bins: number): number[] {
     peaks.push(max);
   }
   return peaks;
-}
-
-/** Random peaks (for the demo/simulated path). */
-export function waveformPeaks(bins = 64, seed = Math.random()): number[] {
-  const out: number[] = [];
-  let s = seed;
-  for (let i = 0; i < bins; i++) {
-    s = (s * 9301 + 49297) % 233280;
-    const r = s / 233280;
-    const env = Math.sin((i / bins) * Math.PI);
-    out.push(0.15 + r * 0.85 * env);
-  }
-  return out;
 }

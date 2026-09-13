@@ -4,147 +4,56 @@
 // ============================================================================
 
 import type { Domain } from "@/lib/types";
+import { LANGUAGES } from "@/lib/types";
+
+function domain(
+  id: string,
+  name: string,
+  emoji: string,
+  icon: string,
+  prompt: string,
+  keyterms: string[],
+): Domain {
+  return {
+    id,
+    label: name,
+    name,
+    icon,
+    emoji,
+    base_prompt: prompt,
+    prompt,
+    keyterms,
+  };
+}
 
 export const DOMAINS: Domain[] = [
-  {
-    id: "founder",
-    label: "Founder",
-    icon: "Rocket",
-    base_prompt:
-      "Startup founder dictating product strategy, fundraising, and team updates.",
-    keyterms: [
-      "roadmap",
-      "runway",
-      "ARR",
-      "MRR",
-      "cap table",
-      "term sheet",
-      "burn rate",
-      "GTM",
-      "OKRs",
-      "standup",
-      "sprint",
-    ],
-  },
-  {
-    id: "researcher",
-    label: "Researcher",
-    icon: "Microscope",
-    base_prompt:
-      "Academic researcher dictating hypotheses, citations, and experiment notes.",
-    keyterms: [
-      "hypothesis",
-      "ablation",
-      "baseline",
-      "arXiv",
-      "p-value",
-      "corpus",
-      "benchmark",
-      "citation",
-      "methodology",
-      "peer review",
-    ],
-  },
-  {
-    id: "clinician",
-    label: "Clinician",
-    icon: "Stethoscope",
-    base_prompt:
-      "Clinician dictating a differential diagnosis, medications, and follow-up plan.",
-    keyterms: [
-      "differential",
-      "etiology",
-      "prognosis",
-      "mg",
-      "PRN",
-      "ECG",
-      "hypertension",
-      "titrate",
-      "contraindication",
-      "follow-up",
-    ],
-  },
-  {
-    id: "engineer",
-    label: "Engineer",
-    icon: "Code",
-    base_prompt:
-      "Software engineer dictating architecture decisions, PRs, and bug notes.",
-    keyterms: [
-      "refactor",
-      "endpoint",
-      "latency",
-      "PR",
-      "merge conflict",
-      "regression",
-      "webhook",
-      "throughput",
-      "race condition",
-      "rollback",
-    ],
-  },
-  {
-    id: "student",
-    label: "Student",
-    icon: "GraduationCap",
-    base_prompt:
-      "Student dictating lecture notes, assignment plans, and study reminders.",
-    keyterms: [
-      "syllabus",
-      "midterm",
-      "problem set",
-      "office hours",
-      "thesis",
-      "lecture",
-      "deadline",
-      "rubric",
-    ],
-  },
-  {
-    id: "parent",
-    label: "Parent",
-    icon: "Heart",
-    base_prompt:
-      "Parent dictating family logistics, reminders, and memorable moments.",
-    keyterms: [
-      "pediatrician",
-      "carpool",
-      "permission slip",
-      "playdate",
-      "recital",
-      "vaccination",
-      "PTA",
-    ],
-  },
+  domain("founder", "Founder", "🚀", "Rocket", "Startup founder dictating product strategy, fundraising, and team updates.", [
+    "roadmap", "runway", "ARR", "MRR", "cap table", "term sheet", "burn rate", "GTM", "OKRs", "standup", "sprint",
+  ]),
+  domain("researcher", "Researcher", "🔬", "Microscope", "Academic researcher dictating hypotheses, citations, and experiment notes.", [
+    "hypothesis", "ablation", "baseline", "arXiv", "p-value", "corpus", "benchmark", "citation", "methodology", "peer review",
+  ]),
+  domain("clinician", "Clinician", "🩺", "Stethoscope", "Clinician dictating a differential diagnosis, medications, and follow-up plan.", [
+    "differential", "etiology", "prognosis", "mg", "PRN", "ECG", "hypertension", "titrate", "contraindication", "follow-up",
+  ]),
+  domain("engineer", "Engineer", "💻", "Code", "Software engineer dictating architecture decisions, PRs, and bug notes.", [
+    "refactor", "endpoint", "latency", "PR", "merge conflict", "regression", "webhook", "throughput", "race condition", "rollback",
+  ]),
+  domain("student", "Student", "🎓", "GraduationCap", "Student dictating lecture notes, assignment plans, and study reminders.", [
+    "syllabus", "midterm", "problem set", "office hours", "thesis", "lecture", "deadline", "rubric",
+  ]),
+  domain("parent", "Parent", "💜", "Heart", "Parent dictating family logistics, reminders, and memorable moments.", [
+    "pediatrician", "carpool", "permission slip", "playdate", "recital", "vaccination", "PTA",
+  ]),
 ];
 
 export function domainById(id: string): Domain | undefined {
   return DOMAINS.find((d) => d.id === id);
 }
 
-/** Supported languages (Universal-3.5 Pro 18-language matrix). */
-export const LANGUAGES: { code: string; label: string }[] = [
-  { code: "en", label: "English" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "it", label: "Italian" },
-  { code: "pt", label: "Portuguese" },
-  { code: "nl", label: "Dutch" },
-  { code: "hi", label: "Hindi" },
-  { code: "ja", label: "Japanese" },
-  { code: "zh", label: "Chinese" },
-  { code: "ko", label: "Korean" },
-  { code: "ru", label: "Russian" },
-  { code: "tr", label: "Turkish" },
-  { code: "pl", label: "Polish" },
-  { code: "uk", label: "Ukrainian" },
-  { code: "vi", label: "Vietnamese" },
-  { code: "id", label: "Indonesian" },
-  { code: "ar", label: "Arabic" },
-];
+export { LANGUAGES };
 
-export function languageLabel(code?: string): string {
+export function languageLabel(code?: string | null): string {
   if (!code) return "Auto-detect";
-  return LANGUAGES.find((l) => l.code === code)?.label ?? code;
+  return LANGUAGES.find((l) => l.code === code)?.name ?? code;
 }

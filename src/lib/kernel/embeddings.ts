@@ -1,14 +1,12 @@
 // ============================================================================
-// VOXEMBLY — Embeddings (SERVER-SIDE). Jina Embeddings v4 (primary) with a
-// deterministic $0 hash-embedding fallback so semantic retrieval works with no
-// keys and no network (the plan's "true $0" guarantee).
+// VOXEMBLY — Embeddings. Jina v3/v4 primary, deterministic hash fallback.
 // ============================================================================
 
 import { fnv1a } from "@/lib/utils";
 
 const DIM = 256;
 
-export async function embed(text: string): Promise<{ vector: number[]; source: string }> {
+export async function embed(text: string): Promise<{ vector: number[]; model: string }> {
   const key = process.env.JINA_API_KEY;
   if (key) {
     try {
@@ -26,21 +24,17 @@ export async function embed(text: string): Promise<{ vector: number[]; source: s
         signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
-        const json: any = await res.json();
+        const json: { data?: { embedding?: number[] }[] } = await res.json();
         const vec = json?.data?.[0]?.embedding;
-        if (Array.isArray(vec) && vec.length) return { vector: vec, source: "jina" };
+        if (Array.isArray(vec) && vec.length) return { vector: vec, model: "jina-embeddings-v3" };
       }
     } catch {
-      /* fall through to hash embed */
+      /* fall through */
     }
   }
-  return { vector: hashEmbed(text), source: "hash" };
+  return { vector: hashEmbed(text), model: "hash-v1" };
 }
 
-/**
- * Deterministic bag-of-words hash embedding. Not semantically rich, but stable,
- * fast, and free — good enough for the demo's k-NN retrieval and DMR probes.
- */
 export function hashEmbed(text: string): number[] {
   const vec = new Array(DIM).fill(0);
   const tokens = text
@@ -50,12 +44,9 @@ export function hashEmbed(text: string): number[] {
     .filter((t) => t.length > 1);
   for (const tok of tokens) {
     const h = fnv1a(tok);
-    const idx = h % DIM;
-    vec[idx] += 1;
-    // second hash bucket for a bit more spread
+    vec[h % DIM] += 1;
     vec[(h >>> 8) % DIM] += 0.5;
   }
-  // L2 normalize
   const norm = Math.sqrt(vec.reduce((a, v) => a + v * v, 0)) || 1;
   return vec.map((v) => v / norm);
 }

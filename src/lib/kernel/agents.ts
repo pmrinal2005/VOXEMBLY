@@ -1,13 +1,8 @@
-// ============================================================================
-// VOXEMBLY — Agent fleet (SERVER-SIDE). The Society-of-Mind Agent Council.
-//
-// Each specialist agent runs on a DIFFERENT free GroqCloud model. When Groq is
-// unconfigured, each agent returns a crafted placeholder so the Council still
-// demos (per plan §6.1: stub with beautiful placeholder cards).
-// ============================================================================
-
-import type { AgentKind } from "@/lib/types";
+import type { AgentKind, AgentOutput } from "@/lib/types";
+import { ALL_AGENTS } from "@/lib/types";
 import { MODELS, chat, groqConfigured } from "@/lib/llm/groq";
+import { extractJson } from "@/lib/utils";
+import { formatHitsForPrompt, webSearch } from "@/lib/kernel/search";
 
 export interface AgentSpec {
   agent: AgentKind;
@@ -17,109 +12,125 @@ export interface AgentSpec {
 }
 
 export const AGENT_SPECS: Record<AgentKind, AgentSpec> = {
-  Researcher: {
-    agent: "Researcher",
+  researcher: {
+    agent: "researcher",
     model: MODELS.reasoner,
     role: "Gathers evidence & cited findings",
     system:
-      "You are the Researcher. Given a thought, surface 2-3 concise, concrete findings or angles worth investigating. Be specific. <=90 words.",
+      'You are the Researcher. Return JSON {headline, bullets[], citations?:[{title,url}]}. Surface 2-3 concise findings. Be specific.',
   },
-  Executor: {
-    agent: "Executor",
+  executor: {
+    agent: "executor",
     model: MODELS.tools,
     role: "Turns intent into concrete actions",
     system:
-      "You are the Executor. Propose the exact next actions (calendar events, messages, PRs, reminders) with concrete titles and timing. <=80 words.",
+      'You are the Executor. Return JSON {headline, bullets[], actions?:[{kind,title,when,target}]}. Propose exact next actions.',
   },
-  DevilsAdvocate: {
-    agent: "DevilsAdvocate",
+  devils_advocate: {
+    agent: "devils_advocate",
     model: MODELS.contrarian,
     role: "Adversarial risk register",
     system:
-      "You are the Devil's Advocate. Ruthlessly critique the thought. List the top 2-3 risks or failure modes as a short risk register. <=90 words.",
+      'You are the Devil\'s Advocate. Return JSON {headline, bullets[], risk_register?:[{risk,severity,mitigation}]}. Ruthlessly critique.',
   },
-  Historian: {
-    agent: "Historian",
+  historian: {
+    agent: "historian",
     model: MODELS.reasoner,
     role: "Recalls related past context",
     system:
-      "You are the Historian. Relate this thought to plausible prior context and note if it may repeat or contradict earlier decisions. <=80 words.",
+      'You are the Historian. Return JSON {headline, bullets[], related?:[{commit,when,why}]}. Relate this thought to prior context.',
   },
-  Scheduler: {
-    agent: "Scheduler",
+  scheduler: {
+    agent: "scheduler",
     model: MODELS.multilingual,
     role: "Extracts dates & reminders",
     system:
-      "You are the Scheduler. Extract any date/time expressions and normalize them to ISO 8601, then state the reminder(s) to set. <=70 words.",
+      'You are the Scheduler. Return JSON {headline, bullets[], schedule?:[{title,iso,human}]}. Normalize datetimes to ISO-8601.',
   },
-  EmotionCurator: {
-    agent: "EmotionCurator",
+  emotion_curator: {
+    agent: "emotion_curator",
     model: MODELS.fast,
     role: "Reads valence & suggests support",
     system:
-      "You are the Emotion Curator. Assess the emotional valence and offer one brief, supportive, non-clinical reflection. <=60 words.",
+      'You are the Emotion Curator. Return JSON {headline, bullets[], valence, arousal}. One brief supportive reflection.',
   },
 };
 
-export interface AgentOutput {
+export async function runAgent(agent: AgentKind, thought: string, context = ""): Promise<{
   agent: AgentKind;
   model: string;
-  output: string;
-  citations?: { title: string; url: string }[];
-}
-
-/** Run a single agent over a thought. */
-export async function runAgent(
-  agent: AgentKind,
-  thought: string,
-  context = "",
-): Promise<AgentOutput> {
-  const spec = AGENT_SPECS[agent];
+  provider: string;
+  output: AgentOutput;
+  latency_ms: number;
+}> {
+  const spec = AGENT_SPECS[agent] ?? AGENT_SPECS.researcher;
+  const t0 = Date.now();
+  let extra = context;
+  if (agent === "researcher") {
+    try {
+      const search = await webSearch(thought.slice(0, 180));
+      extra += `\nWeb:\n${formatHitsForPrompt(search.hits)}`;
+    } catch {
+      /* ignore */
+    }
+  }
   if (groqConfigured()) {
     try {
       const { text, model } = await chat(
         [
           { role: "system", content: spec.system },
-          {
-            role: "user",
-            content: `Thought: """${thought}"""${context ? `\nContext: ${context}` : ""}`,
-          },
+          { role: "user", content: `Thought: """${thought}"""${extra ? `\nContext: ${extra}` : ""}` },
         ],
-        { model: spec.model, temperature: 0.6, maxTokens: 300 },
+        { model: spec.model, temperature: 0.5, maxTokens: 400, json: true },
       );
-      return { agent, model, output: text.trim() || placeholder(agent, thought) };
+      const parsed = extractJson<Partial<AgentOutput>>(text);
+      const output: AgentOutput = {
+        headline: parsed?.headline || text.slice(0, 120) || placeholder(agent, thought).headline,
+        bullets: parsed?.bullets?.length ? parsed.bullets : [text.slice(0, 240)],
+        citations: parsed?.citations,
+        risk_register: parsed?.risk_register,
+        schedule: parsed?.schedule,
+        actions: parsed?.actions,
+        related: parsed?.related,
+        valence: parsed?.valence,
+        arousal: parsed?.arousal,
+        raw: text,
+      };
+      return { agent, model, provider: "groq", output, latency_ms: Date.now() - t0 };
     } catch {
       /* fall through */
     }
   }
-  return { agent, model: spec.model, output: placeholder(agent, thought) };
+  return {
+    agent,
+    model: spec.model,
+    provider: "simulated",
+    output: placeholder(agent, thought),
+    latency_ms: Date.now() - t0,
+  };
 }
 
-/** Run the full council (a subset of agents) in parallel. */
-export async function runCouncil(
-  agents: AgentKind[],
-  thought: string,
-  context = "",
-): Promise<AgentOutput[]> {
-  return Promise.all(agents.map((a) => runAgent(a, thought, context)));
+export async function runCouncil(agents: AgentKind[], thought: string, context = "") {
+  const fleet = (agents.length ? agents : ALL_AGENTS.slice(0, 4)).filter((a) => a in AGENT_SPECS);
+  return Promise.all(fleet.map((a) => runAgent(a, thought, context)));
 }
 
-function placeholder(agent: AgentKind, thought: string): string {
+function placeholder(agent: AgentKind, thought: string): AgentOutput {
   const t = thought.slice(0, 60);
   switch (agent) {
-    case "Researcher":
-      return `Three angles worth exploring on "${t}…": prior art, comparable approaches, and the strongest counter-evidence. (Simulated — set GROQ_API_KEY for live findings.)`;
-    case "Executor":
-      return `Proposed actions: 1) draft the update, 2) create a calendar hold, 3) file a follow-up reminder. (Simulated — set GROQ_API_KEY.)`;
-    case "DevilsAdvocate":
-      return `Risk register: (1) hidden dependency risk, (2) reversibility cost, (3) opportunity cost vs. alternatives. Reconsider before committing. (Simulated.)`;
-    case "Historian":
-      return `This echoes an earlier line of thinking; verify it doesn't contradict a prior decision on the same topic. (Simulated.)`;
-    case "Scheduler":
-      return `No explicit datetime detected — suggest setting a reminder for tomorrow 09:00 local. (Simulated.)`;
-    case "EmotionCurator":
-      return `Valence reads slightly positive. Momentum is good — keep the cadence. (Simulated.)`;
+    case "researcher":
+      return { headline: `Angles on “${t}…”`, bullets: ["Prior art", "Comparable approaches", "Strongest counter-evidence. (Simulated — set GROQ_API_KEY.)"] };
+    case "executor":
+      return { headline: "Proposed actions", bullets: ["Draft the update", "Create a calendar hold", "File a follow-up reminder"], actions: [{ kind: "reminder", title: "Follow up", when: new Date(Date.now() + 86400000).toISOString() }] };
+    case "devils_advocate":
+      return { headline: "Risk register", bullets: ["Hidden dependency", "Reversibility cost", "Opportunity cost"], risk_register: [{ risk: "Hidden dependency", severity: "med", mitigation: "Spike it today" }] };
+    case "historian":
+      return { headline: "This echoes earlier thinking", bullets: ["Verify it doesn't contradict a prior decision."] };
+    case "scheduler":
+      return { headline: "No explicit datetime", bullets: ["Suggest a reminder for tomorrow 09:00 local."], schedule: [{ title: "Follow up", iso: new Date(Date.now() + 86400000).toISOString(), human: "tomorrow 9:00" }] };
+    case "emotion_curator":
+      return { headline: "Valence slightly positive", bullets: ["Momentum is good — keep the cadence."], valence: 0.3, arousal: 0.4 };
     default:
-      return "Simulated agent output.";
+      return { headline: "Simulated agent output", bullets: [] };
   }
 }

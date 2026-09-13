@@ -1,9 +1,103 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* ── VOXEMBLY design tokens (Tailwind v4 @theme) ── */
+@theme {
+  --color-background: hsl(222 47% 3.5%);
+  --color-foreground: hsl(210 40% 94%);
+  --color-card: hsl(222 39% 8%);
+  --color-card-foreground: hsl(210 40% 94%);
+  --color-popover: hsl(222 42% 7%);
+  --color-popover-foreground: hsl(210 40% 94%);
+  --color-primary: hsl(186 100% 42%);
+  --color-primary-foreground: hsl(222 47% 4%);
+  --color-secondary: hsl(222 40% 12%);
+  --color-secondary-foreground: hsl(210 40% 94%);
+  --color-muted: hsl(222 30% 14%);
+  --color-muted-foreground: hsl(215 16% 65%);
+  --color-accent: hsl(222 30% 16%);
+  --color-accent-foreground: hsl(210 40% 94%);
+  --color-destructive: hsl(347 77% 60%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+  --color-border: hsl(217 33% 17%);
+  --color-input: hsl(217 33% 17%);
+  --color-ring: hsl(186 100% 42%);
+
+  --color-vox-cyan: #22d3ee;
+  --color-vox-violet: #a78bfa;
+  --color-vox-emerald: #34d399;
+  --color-vox-amber: #fbbf24;
+  --color-vox-rose: #fb7185;
+  --color-vox-teal: #00cbd6;
+  --color-vox-pink: #f472b6;
+  --color-vox-blue: #60a5fa;
+
+  --color-base-950: #060913;
+  --color-base-900: #0b0f19;
+  --color-base-850: #0e1424;
+  --color-base-800: #0f172a;
+  --color-base-700: #111a30;
+  --color-line: #1e293b;
+  --color-ink: #e5edf7;
+  --color-ink-muted: #94a3b8;
+  --color-ink-faint: #475569;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-jet), ui-monospace, SFMono-Regular, monospace;
+
+  --shadow-panel: 0 1px 0 0 rgba(255, 255, 255, 0.02) inset,
+    0 8px 24px -12px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(0, 203, 214, 0.25),
+    0 0 24px -4px rgba(0, 203, 214, 0.35);
+
+  --animate-pulse-ring: pulse-ring 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  --animate-fade-up: fade-up 0.28s ease-out both;
+  --animate-shimmer: shimmer 2.4s linear infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
 
 :root {
-  --bg: #060913;
+  --background: 222 47% 3.5%;
+  --foreground: 210 40% 94%;
+  --primary: 186 100% 42%;
+  --primary-foreground: 222 47% 4%;
+  --card: 222 39% 8%;
+  --muted-foreground: 215 16% 65%;
+  --border: 217 33% 17%;
+  --radius: 0.75rem;
 }
 
 * {
@@ -12,9 +106,10 @@
 
 html,
 body {
-  background: var(--bg);
+  background: #060913;
   color: #e5edf7;
   overscroll-behavior: none;
+  min-height: 100%;
 }
 
 body {
@@ -22,7 +117,12 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* Subtle scrollbars for the dark theme */
+/* Visible focus ring — never removed (WCAG 2.2 AA). */
+:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -38,41 +138,25 @@ body {
   background: #2b3a54;
 }
 
-@layer components {
-  /* Reusable bento panel */
-  .panel {
-    @apply rounded-2xl border border-line bg-base-850/80 shadow-panel backdrop-blur-sm;
-  }
-  .panel-header {
-    @apply flex items-center justify-between gap-2 px-4 py-3 border-b border-line/70;
-  }
-  .pill {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] font-medium;
-  }
-  .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-vox-teal/60;
-  }
-  .btn-primary {
-    @apply btn bg-vox-teal/90 text-base-950 hover:bg-vox-teal;
-  }
-  .btn-outline {
-    @apply btn border border-line text-ink-muted hover:text-ink hover:border-ink-faint;
-  }
-  .mono {
-    @apply font-mono text-[11px] tracking-tight;
-  }
-  .label-caps {
-    @apply text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-muted;
-  }
+.scrollbar-thin {
+  scrollbar-width: thin;
 }
 
-/* Confidence heatmap word tint */
-.conf-word {
-  border-radius: 3px;
-  padding: 0 1px;
+.grid-bg {
+  background-color: #060913;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(34, 211, 238, 0.08), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 90% 10%, rgba(167, 139, 250, 0.07), transparent 50%),
+    linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
 }
 
-/* Radial glow used behind the orb */
+.glass {
+  background: color-mix(in srgb, var(--color-card) 78%, transparent);
+  backdrop-filter: blur(16px);
+}
+
 .orb-glow {
   background: radial-gradient(
     circle at center,
@@ -80,4 +164,37 @@ body {
     rgba(0, 203, 214, 0.25) 40%,
     transparent 70%
   );
+}
+
+.conf-word {
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+/* High-contrast theme (profile.high_contrast). */
+html.hc {
+  --color-background: #000;
+  --color-foreground: #fff;
+  --color-muted-foreground: #d4d4d8;
+  --color-border: #fafafa;
+  filter: contrast(1.15);
+}
+
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

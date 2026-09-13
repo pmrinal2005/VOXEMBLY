@@ -1,55 +1,82 @@
 // ============================================================================
-// VOXEMBLY — Deep Memory Retrieval (DMR) eval. A small scripted recall probe
-// set that runs against the current Thoughtform history and reports a live
-// "Memory Recall %" — the on-stage accuracy claim (plan §5, §9).
+// VOXEMBLY — Deep Memory Retrieval (DMR) eval. Live "Memory Recall %" score.
 // ============================================================================
 
 import type { DmrProbe, Thoughtform } from "@/lib/types";
 import { hashEmbed } from "@/lib/kernel/embeddings";
 import { cosine } from "@/lib/utils";
 
-export interface DmrResult {
-  probes: DmrProbe[];
-  recall: number; // 0..1
+export interface DMRResult {
+  probes: number;
+  hits: number;
+  recall: number;
+  mrr: number;
+  k: number;
   ran: number;
+  ran_at: number;
+  degraded?: string;
+  details: DmrProbe[];
+  per_probe: DmrProbe[];
 }
 
-/**
- * Build probes from the history itself: for each recent thoughtform we ask
- * "can we retrieve it back from a paraphrase of its own entities?". This gives
- * a deterministic, self-contained benchmark with no external dataset.
- */
-export function runDmr(thoughtforms: Thoughtform[], sampleSize = 40): DmrResult {
-  const withText = thoughtforms.filter((t) => t.polished_text.length > 4);
+export type DmrResult = DMRResult;
+
+export function runDMR(thoughtforms: Thoughtform[], k = 5, sampleSize = 40): DMRResult {
+  const withText = thoughtforms.filter((t) => (t.compiled?.polished_text || "").length > 4);
   if (withText.length === 0) {
-    return { probes: [], recall: 0, ran: 0 };
+    return {
+      probes: 0,
+      hits: 0,
+      recall: 0,
+      mrr: 0,
+      k,
+      ran: 0,
+      degraded: "No Thoughtforms yet — dictate or load the demo Twin first.",
+      details: [],
+      per_probe: [],
+      ran_at: Date.now(),
+    };
   }
   const sample = withText.slice(0, sampleSize);
   const corpus = withText.map((t) => ({
-    id: t.id,
-    vec: t.embedding && t.embedding.length ? t.embedding : hashEmbed(t.polished_text),
-    text: t.polished_text,
+    id: t.commit_hash,
+    vec: t.embedding && t.embedding.length ? t.embedding : hashEmbed(t.compiled.polished_text),
+    text: t.compiled.polished_text,
   }));
 
-  const probes: DmrProbe[] = [];
+  const details: DmrProbe[] = [];
   let hits = 0;
+  let rrSum = 0;
   for (const t of sample) {
-    // query = the entities + intent (a "paraphrase" that should retrieve self)
-    const query = [t.intent, ...t.entities.map((e) => e.name)].join(" ") || t.polished_text.slice(0, 40);
+    const query =
+      [t.compiled.intent, ...t.compiled.entities.map((e) => e.name)].join(" ") ||
+      t.compiled.polished_text.slice(0, 40);
     const qvec = hashEmbed(query);
-    let best = { id: "", score: -1, text: "" };
-    for (const c of corpus) {
-      const s = cosine(qvec, c.vec);
-      if (s > best.score) best = { id: c.id, score: s, text: c.text };
-    }
-    const pass = best.id === t.id || best.score > 0.55;
-    if (pass) hits++;
-    probes.push({
+    const ranked = corpus
+      .map((c) => ({ ...c, score: cosine(qvec, c.vec) }))
+      .sort((a, b) => b.score - a.score);
+    const rank = ranked.findIndex((c) => c.id === t.commit_hash);
+    const inTop = rank >= 0 && rank < k;
+    if (inTop) hits++;
+    if (rank >= 0) rrSum += 1 / (rank + 1);
+    details.push({
       question: `Recall thought about: ${query.slice(0, 48)}`,
-      expected: t.polished_text.slice(0, 60),
-      got: best.text.slice(0, 60),
-      pass,
+      expected: t.compiled.polished_text.slice(0, 60),
+      got: ranked[0]?.text.slice(0, 60) ?? "",
+      pass: inTop,
     });
   }
-  return { probes, recall: hits / sample.length, ran: sample.length };
+  return {
+    probes: sample.length,
+    hits,
+    recall: hits / sample.length,
+    mrr: rrSum / sample.length,
+    k,
+    ran: sample.length,
+    ran_at: Date.now(),
+    details,
+    per_probe: details,
+  };
 }
+
+export const runDmr = runDMR;

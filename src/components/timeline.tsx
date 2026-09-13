@@ -1,111 +1,92 @@
 "use client";
 
-// Git-style ref graph across the bottom + a time-travel slider.
+import type { Branch, Thoughtform } from "@/lib/types";
+import { cn, relativeTime, shortHash } from "@/lib/utils";
+import { Badge } from "@/components/ui";
 
-import { useMemo } from "react";
-import { useCognitive } from "@/store/cognitive-store";
-import { cn, relativeTime } from "@/lib/utils";
-import { GitBranch } from "lucide-react";
-
-export default function Timeline() {
-  const { state, focusHash, setFocus, checkout, timeTravel, setTimeTravel } =
-    useCognitive();
-
-  const commits = useMemo(
-    () => state.order.map((h) => state.thoughtforms[h]).filter(Boolean),
-    [state.order, state.thoughtforms]
-  );
-
-  const times = commits.map((c) => c.created_at);
+export function Timeline({
+  thoughtforms,
+  branches,
+  currentBranch,
+  checkout,
+  selected,
+  onCheckout,
+  onSelect,
+  onReturnToHead,
+  onSwitchBranch,
+}: {
+  thoughtforms: Thoughtform[];
+  branches: Record<string, Branch>;
+  currentBranch: string;
+  checkout: string | null;
+  selected: string | null;
+  onCheckout: (hash: string) => void;
+  onSelect: (hash: string) => void;
+  onReturnToHead: () => void;
+  onSwitchBranch: (name: string) => void;
+}) {
+  const ordered = [...thoughtforms].sort((a, b) => a.created_at - b.created_at);
+  const times = ordered.map((c) => c.created_at);
   const minT = Math.min(...times, Date.now() - 3600_000);
   const maxT = Math.max(...times, Date.now());
   const span = Math.max(1, maxT - minT);
-
-  const sliderVal = timeTravel ?? maxT;
-  const branchNames = state.branches.map((b) => b.name);
+  const names = Object.keys(branches);
 
   return (
-    <section className="panel px-3 py-2.5 sm:px-4" aria-label="Timeline">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <GitBranch className="h-3.5 w-3.5 text-ink-muted" />
-          <span className="label-caps">Timeline</span>
-          <span className="text-[11px] text-ink-muted">
-            {commits.length} commits · {state.branches.length} branches · on{" "}
-            <span className="text-vox-teal">{state.currentBranch}</span>
-          </span>
-        </div>
-        <span
-          className={cn(
-            "pill text-[10px]",
-            timeTravel ? "border-vox-amber/50 text-vox-amber" : "border-vox-green/40 text-vox-green"
-          )}
-        >
-          <span
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              timeTravel ? "bg-vox-amber" : "bg-vox-green"
-            )}
-          />
-          {timeTravel ? "time-travelling" : "live @ HEAD"}
-        </span>
-      </div>
-
-      {/* Branch pill selectors */}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <span className="label-caps mr-1">Refs</span>
-        {state.branches.map((b) => (
+    <div className="flex h-full min-h-[180px] flex-col gap-3 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {names.map((n) => (
           <button
-            key={b.name}
-            onClick={() => checkout(b.name)}
+            key={n}
+            type="button"
+            onClick={() => onSwitchBranch(n)}
             className={cn(
-              "pill transition",
-              state.currentBranch === b.name
-                ? "border-transparent text-base-950"
-                : "text-ink-muted hover:text-ink"
+              "rounded-full border px-2.5 py-0.5 font-mono text-[10px]",
+              n === currentBranch
+                ? "border-vox-cyan bg-vox-cyan/15 text-vox-cyan"
+                : "border-border text-muted-foreground hover:text-foreground",
             )}
-            style={
-              state.currentBranch === b.name
-                ? { backgroundColor: b.color }
-                : { borderColor: `${b.color}66` }
-            }
+            style={{ borderColor: branches[n]?.color }}
           >
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: b.color }} />
-            {b.name}
+            {n}
+            {branches[n]?.head ? ` @${shortHash(branches[n].head!)}` : ""}
           </button>
         ))}
+        {checkout && (
+          <button type="button" onClick={onReturnToHead} className="text-[11px] text-vox-amber underline">
+            return to HEAD
+          </button>
+        )}
       </div>
 
-      {/* Commit track */}
-      <div className="mt-3 overflow-x-auto pb-1">
-        <div className="relative flex min-w-[420px] items-center gap-0">
-          <div className="absolute left-2 right-2 top-1/2 h-px -translate-y-1/2 bg-line" />
-          {commits.map((c) => {
-            const branch = state.branches.find((b) => b.name === c.branch);
-            const isHead = state.branches.some((b) => b.head === c.commit_hash);
-            const isFocus = focusHash === c.commit_hash;
+      <div className="relative min-h-[72px] flex-1 overflow-x-auto">
+        <div className="relative h-16 min-w-full" style={{ minWidth: Math.max(640, ordered.length * 56) }}>
+          <div className="absolute left-2 right-2 top-7 h-px bg-border" />
+          {ordered.map((tf) => {
+            const x = ((tf.created_at - minT) / span) * 100;
+            const active = selected === tf.commit_hash || checkout === tf.commit_hash;
+            const color = branches[tf.branch]?.color || "#22d3ee";
             return (
               <button
-                key={c.commit_hash}
-                onClick={() => setFocus(c.commit_hash)}
-                className="group relative z-10 flex flex-1 flex-col items-center gap-1 px-1"
-                title={c.title}
+                key={tf.commit_hash}
+                type="button"
+                title={`${shortHash(tf.commit_hash)} · ${tf.compiled.title}`}
+                onClick={() => {
+                  onSelect(tf.commit_hash);
+                  onCheckout(tf.commit_hash);
+                }}
+                className="absolute top-3 flex -translate-x-1/2 flex-col items-center"
+                style={{ left: `${x}%` }}
               >
-                {isHead && (
-                  <span className="mono text-[9px] text-ink-faint">HEAD</span>
-                )}
                 <span
                   className={cn(
-                    "grid h-3.5 w-3.5 place-items-center rounded-full border-2 transition",
-                    isFocus ? "scale-125" : "group-hover:scale-110"
+                    "h-3 w-3 rounded-full border-2",
+                    active ? "scale-125" : "",
                   )}
-                  style={{
-                    borderColor: branch?.color ?? "#00CBD6",
-                    backgroundColor: isFocus ? branch?.color ?? "#00CBD6" : "#0B0F19",
-                  }}
+                  style={{ background: color, borderColor: active ? "#fff" : color }}
                 />
-                <span className="mono text-[9px] text-ink-muted">
-                  {c.commit_hash.slice(0, 4)}
+                <span className="mt-2 max-w-[72px] truncate font-mono text-[9px] text-muted-foreground">
+                  {shortHash(tf.commit_hash)}
                 </span>
               </button>
             );
@@ -113,30 +94,26 @@ export default function Timeline() {
         </div>
       </div>
 
-      {/* Time-travel slider */}
-      <div className="mt-2 flex items-center gap-3">
-        <span className="label-caps whitespace-nowrap">Time travel</span>
-        <input
-          type="range"
-          min={minT}
-          max={maxT}
-          value={sliderVal}
-          step={span / 200}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setTimeTravel(v >= maxT ? null : v);
-          }}
-          aria-label="Time travel through commit history"
-          className="h-1.5 flex-1 cursor-pointer appearance-none rounded-full bg-line accent-vox-teal
-            [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none
-            [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-vox-teal
-            [&::-webkit-slider-thumb]:shadow-glow"
-        />
-        <span className="mono whitespace-nowrap text-[10px] text-ink-muted">
-          {timeTravel ? relativeTime(sliderVal) : "now"}
-        </span>
+      <div className="flex flex-wrap gap-2">
+        {ordered.slice(-8).reverse().map((tf) => (
+          <button
+            key={tf.commit_hash}
+            type="button"
+            onClick={() => onSelect(tf.commit_hash)}
+            className={cn(
+              "rounded-lg border px-2 py-1 text-left",
+              selected === tf.commit_hash ? "border-vox-cyan bg-vox-cyan/10" : "border-border",
+            )}
+          >
+            <div className="flex items-center gap-1.5">
+              <Badge tone="neutral">{tf.compiled.intent}</Badge>
+              <code className="font-mono text-[10px] text-muted-foreground">{shortHash(tf.commit_hash)}</code>
+              <span className="text-[10px] text-muted-foreground">{relativeTime(tf.created_at)}</span>
+            </div>
+            <p className="mt-0.5 max-w-[220px] truncate text-[11px]">{tf.compiled.title}</p>
+          </button>
+        ))}
       </div>
-      <span className="sr-only">{branchNames.join(", ")}</span>
-    </section>
+    </div>
   );
 }

@@ -34,7 +34,7 @@ export function LatencyDial({
   clientMs: number | null;
   warmed: boolean;
   region: string;
-  route?: "sync" | "prerecorded";
+  route?: "sync" | "prerecorded" | "simulated";
   compact?: boolean;
 }) {
   // Log-ish scale: 30 ms → 0, 3000 ms → 1, so the interesting 100–500 ms band gets real sweep.

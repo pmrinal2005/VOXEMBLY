@@ -37,8 +37,10 @@ const INTENT_TONE: Record<string, "neutral" | "cyan" | "violet" | "amber" | "ros
 export function Artifact({ artifact, shared }: { artifact: PublishedThoughtform; shared: boolean }) {
   const tf = artifact.thoughtform;
   const c = tf.compiled;
-  const snapshot = artifact.snapshot ?? { nodes: [], edges: [], at: tf.created_at, branch: tf.branch };
-  const liveEdges = (snapshot.edges ?? []).filter((e) => e.valid_to === null);
+  const snapshot = artifact.snapshot ?? { nodes: {}, edges: {} };
+  const snapshotNodes = Object.values(snapshot.nodes ?? {});
+  const snapshotEdges = Object.values(snapshot.edges ?? {});
+  const liveEdges = snapshotEdges.filter((e) => e.valid_to === null);
   const doneRuns = (tf.agent_runs ?? []).filter((r) => r.status === "done" && r.output);
 
   return (
@@ -105,7 +107,7 @@ export function Artifact({ artifact, shared }: { artifact: PublishedThoughtform;
         </Card>
         <Card>
           <CardBody>
-            <Stat label="Graph at commit" value={`${snapshot.nodes?.length ?? 0} nodes`} sub={`${liveEdges.length} live edges`} />
+            <Stat label="Graph at commit" value={`${snapshotNodes.length ?? 0} nodes`} sub={`${liveEdges.length} live edges`} />
           </CardBody>
         </Card>
       </section>
@@ -263,18 +265,18 @@ export function Artifact({ artifact, shared }: { artifact: PublishedThoughtform;
       )}
 
       {/* ─────────── graph snapshot ─────────── */}
-      {snapshot.nodes?.length > 0 && (
+      {snapshotNodes.length > 0 && (
         <section aria-label="Cognitive Twin snapshot at commit time" className="mt-6">
           <Card>
             <CardHeader>
               <CardTitle>Cognitive Twin at this commit</CardTitle>
               <span className="font-mono text-[10px] text-muted-foreground">
-                {snapshot.nodes.length} nodes · {liveEdges.length} live edges
+                {snapshotNodes.length} nodes · {liveEdges.length} live edges
               </span>
             </CardHeader>
             <CardBody>
               <ul className="flex flex-wrap gap-1.5">
-                {snapshot.nodes
+                {snapshotNodes
                   .slice()
                   .sort((a, b) => b.mentions - a.mentions)
                   .slice(0, 48)
@@ -290,7 +292,7 @@ export function Artifact({ artifact, shared }: { artifact: PublishedThoughtform;
                       </span>
                     </li>
                   ))}
-                {snapshot.nodes.length > 48 && <li className="self-center text-[11px] text-muted-foreground">+{snapshot.nodes.length - 48} more</li>}
+                {snapshotNodes.length > 48 && <li className="self-center text-[11px] text-muted-foreground">+{snapshotNodes.length - 48} more</li>}
               </ul>
             </CardBody>
           </Card>
@@ -351,7 +353,7 @@ export function Artifact({ artifact, shared }: { artifact: PublishedThoughtform;
 /* ───────────────────────── local (IndexedDB) fallback ───────────────────────── */
 
 export function LocalArtifactFallback({ hash }: { hash: string }) {
-  const [state, setState] = React.useState<{ status: "loading" | "found" | "missing"; artifact?: PublishedThoughtform }>({ status: "loading" });
+  const [state, setState] = React.useState<{ status: "loading" | "found" | "missing"; artifact?: PublishedThoughtform | null }>({ status: "loading" });
 
   React.useEffect(() => {
     let cancelled = false;
@@ -360,7 +362,7 @@ export function LocalArtifactFallback({ hash }: { hash: string }) {
       let art = await store.getPublished(hash);
       if (!art) {
         const all = await store.loadPublished();
-        art = all.find((a) => a.hash.startsWith(hash));
+        art = all.find((a) => a.hash.startsWith(hash)) ?? null;
       }
       if (cancelled) return;
       setState(art ? { status: "found", artifact: art } : { status: "missing" });

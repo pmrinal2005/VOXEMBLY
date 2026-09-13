@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -10,7 +11,7 @@ const inter = Inter({
 
 const mono = JetBrains_Mono({
   subsets: ["latin"],
-  variable: "--font-mono",
+  variable: "--font-mono-jet",
   display: "swap",
 });
 
@@ -25,17 +26,12 @@ export const viewport: Viewport = {
   themeColor: "#060913",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`}>
-      <body className="min-h-screen font-sans antialiased">{children}</body>
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">{children}</body>
     </html>
   );
 }

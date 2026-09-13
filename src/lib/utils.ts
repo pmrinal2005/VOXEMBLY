@@ -201,7 +201,18 @@ function icsStamp(d: Date): string {
 }
 
 /** Build a minimal RFC-5545 VCALENDAR from scheduled items (Executor / Scheduler). */
-export function buildICS(events: { title: string; iso: string; description?: string }[]): string {
+export function buildICS(
+  eventsOrTitle: { title: string; iso: string; description?: string }[] | string,
+  iso?: string,
+): string {
+  const events =
+    typeof eventsOrTitle === "string"
+      ? [{ title: eventsOrTitle, iso: iso || new Date().toISOString() }]
+      : eventsOrTitle;
+  return buildICSFromEvents(events);
+}
+
+function buildICSFromEvents(events: { title: string; iso: string; description?: string }[]): string {
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//VOXEMBLY//Thoughtform//EN"];
   for (const e of events) {
     const start = new Date(e.iso);
@@ -222,7 +233,7 @@ export function buildICS(events: { title: string; iso: string; description?: str
   return lines.join("\r\n");
 }
 
-export type DiffOp = { type: "keep" | "add" | "remove"; text: string };
+export type DiffOp = { type: "keep" | "add" | "remove" | "added" | "removed"; text: string };
 
 /**
  * A tiny word-level diff (LCS) between the raw transcript and the polished text.

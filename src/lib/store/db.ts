@@ -1,22 +1,24 @@
 "use client";
 
 // ============================================================================
-// VOXEMBLY — Local persistence over IndexedDB (via idb). Also serves as the
-// offline draft queue (Flow: accessibility / low-bandwidth). Everything works
-// with zero backend; Supabase sync is layered on top when configured.
+// VOXEMBLY — Local persistence over IndexedDB (via idb).
+// Offline draft queue + Twin state. Postgres (Drizzle) is the share plane.
 // ============================================================================
 
 import { openDB, type IDBPDatabase } from "idb";
-import type { Branch, Graph, Profile, Thoughtform } from "@/lib/types";
+import type {
+  Branch,
+  DraftRecord,
+  Graph,
+  Profile,
+  PublishedThoughtform,
+  Thoughtform,
+} from "@/lib/types";
+
+export type { DraftRecord };
 
 const DB_NAME = "voxembly";
-const DB_VERSION = 1;
-
-interface Stores {
-  thoughtforms: Thoughtform;
-  meta: any;
-  drafts: { id: string; wav: Blob; createdAt: number };
-}
+const DB_VERSION = 2;
 
 let dbp: Promise<IDBPDatabase> | null = null;
 
@@ -28,13 +30,19 @@ function db(): Promise<IDBPDatabase> {
     dbp = openDB(DB_NAME, DB_VERSION, {
       upgrade(d) {
         if (!d.objectStoreNames.contains("thoughtforms")) {
-          d.createObjectStore("thoughtforms", { keyPath: "id" });
+          d.createObjectStore("thoughtforms", { keyPath: "commit_hash" });
+        }
+        if (!d.objectStoreNames.contains("branches")) {
+          d.createObjectStore("branches", { keyPath: "name" });
         }
         if (!d.objectStoreNames.contains("meta")) {
           d.createObjectStore("meta", { keyPath: "key" });
         }
         if (!d.objectStoreNames.contains("drafts")) {
           d.createObjectStore("drafts", { keyPath: "id" });
+        }
+        if (!d.objectStoreNames.contains("published")) {
+          d.createObjectStore("published", { keyPath: "hash" });
         }
       },
     });
@@ -50,9 +58,7 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-// ---- Thoughtforms ----------------------------------------------------------
-
-export async function saveThoughtform(tf: Thoughtform): Promise<void> {
+export async function putThoughtform(tf: Thoughtform): Promise<void> {
   await safe(async () => {
     const d = await db();
     await d.put("thoughtforms", tf);
@@ -63,67 +69,142 @@ export async function allThoughtforms(): Promise<Thoughtform[]> {
   return safe(async () => {
     const d = await db();
     const all = (await d.getAll("thoughtforms")) as Thoughtform[];
-    return all.sort((a, b) => a.createdAt - b.createdAt);
+    return all.sort((a, b) => a.created_at - b.created_at);
   }, []);
 }
 
-// ---- Meta (profile, branches, graph) ---------------------------------------
+export async function getThoughtform(hash: string): Promise<Thoughtform | null> {
+  return safe(async () => {
+    const d = await db();
+    const row = (await d.get("thoughtforms", hash)) as Thoughtform | undefined;
+    if (row) return row;
+    const all = (await d.getAll("thoughtforms")) as Thoughtform[];
+    return all.find((t) => t.commit_hash.startsWith(hash)) ?? null;
+  }, null);
+}
 
-async function getMeta<T>(key: string, fallback: T): Promise<T> {
+export async function getMeta<T>(key: string, fallback?: T): Promise<T | undefined> {
   return safe(async () => {
     const d = await db();
     const row = await d.get("meta", key);
-    return row ? (row.value as T) : fallback;
+    return row ? ((row as { value: T }).value as T) : fallback;
   }, fallback);
 }
 
-async function setMeta(key: string, value: unknown): Promise<void> {
+export async function setMeta(key: string, value: unknown): Promise<void> {
   await safe(async () => {
     const d = await db();
     await d.put("meta", { key, value });
   }, undefined);
 }
 
-export const getProfile = () => getMeta<Profile | null>("profile", null);
-export const setProfile = (p: Profile) => setMeta("profile", p);
+export async function saveProfile(p: Profile): Promise<void> {
+  await setMeta("profile", p);
+}
 
-export const getBranches = () => getMeta<Branch[] | null>("branches", null);
-export const setBranches = (b: Branch[]) => setMeta("branches", b);
+export async function getProfile(): Promise<Profile | null> {
+  return (await getMeta<Profile>("profile")) ?? null;
+}
 
-export const getGraph = () => getMeta<Graph | null>("graph", null);
-export const setGraph = (g: Graph) => setMeta("graph", g);
-
-export const getCurrentBranch = () => getMeta<string>("currentBranch", "main");
-export const setCurrentBranch = (n: string) => setMeta("currentBranch", n);
-
-// ---- Offline draft queue ---------------------------------------------------
-
-export async function queueDraft(id: string, wav: Blob): Promise<void> {
+export async function putBranch(b: Branch): Promise<void> {
   await safe(async () => {
     const d = await db();
-    await d.put("drafts", { id, wav, createdAt: Date.now() });
+    await d.put("branches", b);
   }, undefined);
 }
 
-export async function dequeueDraft(id: string): Promise<void> {
+export async function getBranches(): Promise<Record<string, Branch>> {
+  return safe(async () => {
+    const d = await db();
+    const all = (await d.getAll("branches")) as Branch[];
+    const rec: Record<string, Branch> = {};
+    for (const b of all) rec[b.name] = b;
+    return rec;
+  }, {});
+}
+
+export const getGraph = () => getMeta<Graph>("graph", { nodes: {}, edges: {} } as Graph);
+export const setGraph = (g: Graph) => setMeta("graph", g);
+
+export const getCurrentBranch = async () =>
+  (await getMeta<string>("currentBranch", "main")) ?? "main";
+export const setCurrentBranch = (n: string) => setMeta("currentBranch", n);
+
+export async function loadDrafts(): Promise<DraftRecord[]> {
+  return safe(async () => {
+    const d = await db();
+    return ((await d.getAll("drafts")) as DraftRecord[]).sort(
+      (a, b) => a.created_at - b.created_at,
+    );
+  }, []);
+}
+
+export async function enqueueDraft(draft: DraftRecord): Promise<void> {
+  await safe(async () => {
+    const d = await db();
+    await d.put("drafts", draft);
+  }, undefined);
+}
+
+export async function dropDraft(id: string): Promise<void> {
   await safe(async () => {
     const d = await db();
     await d.delete("drafts", id);
   }, undefined);
 }
 
-export async function pendingDrafts(): Promise<{ id: string; wav: Blob; createdAt: number }[]> {
+export async function putPublished(p: PublishedThoughtform): Promise<void> {
+  await safe(async () => {
+    const d = await db();
+    await d.put("published", p);
+  }, undefined);
+}
+
+export async function getPublished(hash: string): Promise<PublishedThoughtform | null> {
   return safe(async () => {
     const d = await db();
-    return (await d.getAll("drafts")) as any[];
+    const row = (await d.get("published", hash)) as PublishedThoughtform | undefined;
+    if (row) return row;
+    const all = (await d.getAll("published")) as PublishedThoughtform[];
+    return all.find((a) => a.hash.startsWith(hash)) ?? null;
+  }, null);
+}
+
+export async function loadPublished(): Promise<PublishedThoughtform[]> {
+  return safe(async () => {
+    const d = await db();
+    return (await d.getAll("published")) as PublishedThoughtform[];
   }, []);
+}
+
+export async function exportTwin(): Promise<string> {
+  const [profile, thoughtforms, branches, graph] = await Promise.all([
+    getProfile(),
+    allThoughtforms(),
+    getBranches(),
+    getGraph(),
+  ]);
+  return JSON.stringify(
+    { profile, thoughtforms, branches, graph, exported_at: Date.now() },
+    null,
+    2,
+  );
+}
+
+export async function wipeLocalTwin(): Promise<void> {
+  await safe(async () => {
+    const d = await db();
+    for (const s of ["thoughtforms", "branches", "meta", "drafts"] as const) {
+      await d.clear(s);
+    }
+  }, undefined);
 }
 
 export async function wipeAll(): Promise<void> {
   await safe(async () => {
     const d = await db();
-    await d.clear("thoughtforms");
-    await d.clear("meta");
-    await d.clear("drafts");
+    for (const s of ["thoughtforms", "branches", "meta", "drafts", "published"] as const) {
+      await d.clear(s);
+    }
   }, undefined);
 }

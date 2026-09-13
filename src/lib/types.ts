@@ -121,6 +121,7 @@ export const ALL_AGENTS: AgentKind[] = [
 export interface Entity {
   name: string;
   type: NodeType;
+  description?: string;
 }
 
 /** Sentiment / valence analysis. */
@@ -136,13 +137,14 @@ export interface ThoughtAction {
   when?: string | null; // ISO string for time-based actions
   target?: string; // e.g. Slack channel, repo
   status: "proposed" | "done" | "skipped";
+  payload?: string;
 }
 
 /* ─────────────────────────── Graph (Record-based) ─────────────────────────── */
 
 /** A graph mutation emitted by the compile pass and applied to the Twin. */
 export interface GraphMutation {
-  op: "add_node" | "add_edge" | "update_node";
+  op: "add_node" | "add_edge" | "update_node" | "invalidate_edge";
   // node ops
   id?: string;
   type?: NodeType;
@@ -205,6 +207,20 @@ export interface Citation {
   url: string;
 }
 
+export interface AgentAction {
+  kind: string;
+  title: string;
+  payload?: string;
+  when?: string;
+  target?: string;
+}
+
+export interface RelatedCommit {
+  commit: string;
+  when: string;
+  why: string;
+}
+
 /** The structured output a single agent produces. */
 export interface AgentOutput {
   headline: string;
@@ -212,6 +228,11 @@ export interface AgentOutput {
   citations?: Citation[];
   risk_register?: RiskItem[];
   schedule?: ScheduleItem[];
+  actions?: AgentAction[];
+  related?: RelatedCommit[];
+  valence?: number;
+  arousal?: number;
+  raw?: string;
 }
 
 export type AgentStatus = "queued" | "running" | "done" | "error" | "paused";
@@ -277,6 +298,8 @@ export interface Thoughtform {
 
   // lifecycle
   published?: boolean;
+  /** Set on two-parent merge commits. */
+  merged_from?: string[];
 }
 
 /* ─────────────────────────── VCS ─────────────────────────── */
@@ -316,8 +339,11 @@ export interface Profile {
 export interface Domain {
   id: string;
   label: string;
+  name: string;
   icon: string;
+  emoji: string;
   base_prompt: string;
+  prompt: string;
   keyterms: string[];
 }
 
@@ -325,28 +351,30 @@ export interface Domain {
 export interface Language {
   code: string;
   label: string;
+  name: string;
+  native: string;
 }
 
 /** The 18-language matrix Universal-3.5 Pro supports. */
 export const LANGUAGES: Language[] = [
-  { code: "en", label: "English" },
-  { code: "es", label: "Spanish" },
-  { code: "fr", label: "French" },
-  { code: "de", label: "German" },
-  { code: "it", label: "Italian" },
-  { code: "pt", label: "Portuguese" },
-  { code: "nl", label: "Dutch" },
-  { code: "hi", label: "Hindi" },
-  { code: "ja", label: "Japanese" },
-  { code: "zh", label: "Chinese" },
-  { code: "ko", label: "Korean" },
-  { code: "ru", label: "Russian" },
-  { code: "tr", label: "Turkish" },
-  { code: "pl", label: "Polish" },
-  { code: "uk", label: "Ukrainian" },
-  { code: "vi", label: "Vietnamese" },
-  { code: "id", label: "Indonesian" },
-  { code: "fi", label: "Finnish" },
+  { code: "en", label: "English", name: "English", native: "English" },
+  { code: "es", label: "Spanish", name: "Spanish", native: "Español" },
+  { code: "fr", label: "French", name: "French", native: "Français" },
+  { code: "de", label: "German", name: "German", native: "Deutsch" },
+  { code: "it", label: "Italian", name: "Italian", native: "Italiano" },
+  { code: "pt", label: "Portuguese", name: "Portuguese", native: "Português" },
+  { code: "nl", label: "Dutch", name: "Dutch", native: "Nederlands" },
+  { code: "hi", label: "Hindi", name: "Hindi", native: "हिन्दी" },
+  { code: "ja", label: "Japanese", name: "Japanese", native: "日本語" },
+  { code: "zh", label: "Chinese", name: "Chinese", native: "中文" },
+  { code: "ko", label: "Korean", name: "Korean", native: "한국어" },
+  { code: "ru", label: "Russian", name: "Russian", native: "Русский" },
+  { code: "tr", label: "Turkish", name: "Turkish", native: "Türkçe" },
+  { code: "pl", label: "Polish", name: "Polish", native: "Polski" },
+  { code: "uk", label: "Ukrainian", name: "Ukrainian", native: "Українська" },
+  { code: "vi", label: "Vietnamese", name: "Vietnamese", native: "Tiếng Việt" },
+  { code: "id", label: "Indonesian", name: "Indonesian", native: "Bahasa Indonesia" },
+  { code: "fi", label: "Finnish", name: "Finnish", native: "Suomi" },
 ];
 
 /* ─────────────────────────── Compose / publish / DMR ─────────────────────────── */
@@ -385,6 +413,10 @@ export interface DmrProbe {
   expected: string;
   got: string;
   pass: boolean;
+  id?: string;
+  kind?: string;
+  hit?: boolean;
+  rank?: number;
 }
 
 /* ─────────────────────────── Pipeline transport types ─────────────────────────── */

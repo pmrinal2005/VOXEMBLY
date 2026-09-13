@@ -5,9 +5,8 @@ import { languageLabel } from "@/lib/twin/domains";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Translate a Thoughtform's polished text to a target language (Flow G). */
 export async function POST(req: NextRequest) {
-  let body: { text?: string; target?: string };
+  let body: { text?: string; target?: string; locale_pack?: string };
   try {
     body = await req.json();
   } catch {
@@ -19,25 +18,29 @@ export async function POST(req: NextRequest) {
 
   if (!groqConfigured()) {
     return NextResponse.json({
-      translated: `[${languageLabel(target)}] ${text}`,
+      text: `[${languageLabel(target)}] ${text}`,
       target,
       simulated: true,
     });
   }
   try {
+    const locale =
+      body.locale_pack === "keigo"
+        ? " Use polite Japanese keigo."
+        : body.locale_pack === "usted"
+          ? " Use formal Spanish usted."
+          : "";
     const { text: out } = await chat(
       [
         {
           role: "system",
-          content: `You are a translator. Translate the user's text into ${languageLabel(
-            target,
-          )} (code: ${target}). Preserve meaning and tone. Output ONLY the translation.`,
+          content: `You are a translator. Translate into ${languageLabel(target)} (code: ${target}).${locale} Output ONLY the translation.`,
         },
         { role: "user", content: text },
       ],
       { model: MODELS.multilingual, temperature: 0.3, maxTokens: 400 },
     );
-    return NextResponse.json({ translated: out.trim(), target });
+    return NextResponse.json({ text: out.trim(), target });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 502 });
   }

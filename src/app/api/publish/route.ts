@@ -5,31 +5,28 @@ import type { PublishedThoughtform } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Publish a Thoughtform to a read-only public artifact at /t/[hash]. */
 export async function POST(req: NextRequest) {
-  let body: Partial<PublishedThoughtform>;
+  let body: { artifact?: PublishedThoughtform } & Partial<PublishedThoughtform>;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
-  if (!body.thoughtform || !body.thoughtform.commit_hash) {
+  const artifact = body.artifact || (body as PublishedThoughtform);
+  if (!artifact?.thoughtform?.commit_hash) {
     return NextResponse.json({ error: "missing thoughtform" }, { status: 400 });
   }
-  const hash = body.thoughtform.commit_hash;
   const record: PublishedThoughtform = {
-    hash,
-    thoughtform: body.thoughtform,
-    agentRuns: body.agentRuns || [],
-    graphSnapshot: body.graphSnapshot || { nodes: [], edges: [] },
-    publishedAt: Date.now(),
-    author: body.author || "Anonymous",
+    hash: artifact.hash || artifact.thoughtform.commit_hash,
+    thoughtform: artifact.thoughtform,
+    snapshot: artifact.snapshot || { nodes: {}, edges: {} },
+    author: artifact.author || "Anonymous",
+    published_at: artifact.published_at || Date.now(),
   };
   await putPublished(record);
-  return NextResponse.json({ ok: true, hash, url: `/t/${hash}` });
+  return NextResponse.json({ ok: true, hash: record.hash, url: `/t/${record.hash}`, shared: true });
 }
 
-/** Fetch a published artifact (used by the public page as a fallback). */
 export async function GET(req: NextRequest) {
   const hash = req.nextUrl.searchParams.get("hash");
   if (!hash) return NextResponse.json({ error: "missing hash" }, { status: 400 });

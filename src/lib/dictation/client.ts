@@ -134,10 +134,9 @@ export class DictationClient {
     try {
       // A lightweight request establishes the connection pool. We accept any
       // HTTP response (even 4xx) because the goal is the handshake, not a body.
-      await fetch(url, {
-        method: "OPTIONS",
-        headers: { Authorization: this.apiKey },
-        // Keep it snappy — the handshake is what matters.
+      const warmUrl = `${baseUrl(r)}/warm`;
+      await fetch(warmUrl, {
+        method: "GET",
         signal: AbortSignal.timeout(4000),
       }).catch(() => undefined);
       return { ok: true, ms: Date.now() - t0, region: r, endpoint: url };
@@ -174,12 +173,15 @@ export class DictationClient {
 
     const form = new FormData();
     form.append("audio", blob, filename);
-    if (cfg.prompt) form.append("prompt", clampPrompt(cfg.prompt));
+    const config: Record<string, unknown> = {};
+    if (cfg.prompt) config.prompt = clampPrompt(cfg.prompt);
     if (cfg.keyterms_prompt && cfg.keyterms_prompt.length) {
-      // AssemblyAI accepts keyterms as a JSON array field.
-      form.append("keyterms_prompt", JSON.stringify(clampKeyterms(cfg.keyterms_prompt)));
+      config.keyterms_prompt = clampKeyterms(cfg.keyterms_prompt);
     }
-    if (cfg.language_code) form.append("language_code", cfg.language_code);
+    if (cfg.language_code) config.language_code = cfg.language_code;
+    if (Object.keys(config).length) {
+      form.append("config", new Blob([JSON.stringify(config)], { type: "application/json" }));
+    }
 
     const doPost = async (): Promise<Response> =>
       fetch(url, {

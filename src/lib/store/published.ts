@@ -1,48 +1,59 @@
-// ============================================================================
-// VOXEMBLY — Published Thoughtform store (SERVER-SIDE).
-//
-// Persists published artifacts to Supabase when configured; otherwise keeps an
-// in-memory map (survives within a single server instance) so /t/[hash] works
-// for the live demo without any backend.
-// ============================================================================
-
 import type { PublishedThoughtform } from "@/lib/types";
-import { getSupabaseAdmin } from "@/lib/supabase/admin";
+import { db } from "@/db";
+import { publishedThoughtforms } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 const memory = new Map<string, PublishedThoughtform>();
 
-const TABLE = "published_thoughtforms";
-
 export async function putPublished(p: PublishedThoughtform): Promise<void> {
   memory.set(p.hash, p);
-  const sb = getSupabaseAdmin();
-  if (sb) {
-    try {
-      await sb.from(TABLE).upsert({
+  try {
+    await db
+      .insert(publishedThoughtforms)
+      .values({
         hash: p.hash,
-        payload: p,
-        published_at: new Date(p.publishedAt).toISOString(),
-        author: p.author,
+        author: p.author || "Anonymous",
+        publishedAt: new Date(p.published_at),
+        thoughtform: p.thoughtform as unknown as Record<string, unknown>,
+        snapshot: p.snapshot as unknown as Record<string, unknown>,
+      })
+      .onConflictDoUpdate({
+        target: publishedThoughtforms.hash,
+        set: {
+          author: p.author || "Anonymous",
+          publishedAt: new Date(p.published_at),
+          thoughtform: p.thoughtform as unknown as Record<string, unknown>,
+          snapshot: p.snapshot as unknown as Record<string, unknown>,
+        },
       });
-    } catch {
-      /* keep memory copy */
-    }
+  } catch (e) {
+    console.warn("[voxembly] published persist failed", e);
   }
 }
 
 export async function getPublished(hash: string): Promise<PublishedThoughtform | null> {
   if (memory.has(hash)) return memory.get(hash)!;
-  const sb = getSupabaseAdmin();
-  if (sb) {
-    try {
-      const { data } = await sb.from(TABLE).select("payload").eq("hash", hash).single();
-      if (data?.payload) {
-        memory.set(hash, data.payload as PublishedThoughtform);
-        return data.payload as PublishedThoughtform;
-      }
-    } catch {
-      /* not found */
-    }
+  for (const [k, v] of memory) {
+    if (k.startsWith(hash)) return v;
   }
-  return null;
+  try {
+    const rows = await db
+      .select()
+      .from(publishedThoughtforms)
+      .where(eq(publishedThoughtforms.hash, hash))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return null;
+    const rec: PublishedThoughtform = {
+      hash: row.hash,
+      author: row.author,
+      published_at: row.publishedAt.getTime(),
+      thoughtform: row.thoughtform as PublishedThoughtform["thoughtform"],
+      snapshot: row.snapshot as PublishedThoughtform["snapshot"],
+    };
+    memory.set(rec.hash, rec);
+    return rec;
+  } catch {
+    return null;
+  }
 }
