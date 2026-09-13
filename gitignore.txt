@@ -4,32 +4,55 @@ node_modules/
 .pnp.js
 
 # next.js
-.next/
-out/
-build/
-dist/
+/.next/
+/out/
+next-env.d.ts
+.next
+*.tsbuildinfo
 
-# env
+# production
+/build
+/dist
+
+# env — NEVER commit secrets
 .env
 .env*.local
+.env.local
 .env.production
-.dev.vars
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# vercel
+.vercel
 
 # logs
 logs/
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# pm2
 .pm2/
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# testing
+/coverage
 
 # misc
 .DS_Store
 *.pem
-*.tsbuildinfo
-next-env.d.ts
-.vercel
+.idea/
+.vscode/*
+!.vscode/launch.json
 
 # backups
 *.backup
 *.bak
 *.tar.gz
-*.zip
