@@ -1,186 +1,89 @@
 "use client";
 
-/**
- * The Orb — the single always-visible Push-to-Think control (§3.7.1).
- *
- * Hold to dictate. The ring radius encodes live mic level while recording, and the returned
- * AssemblyAI `confidence` once the transcript lands. Fully operable by pointer, keyboard
- * (hold Space / Enter) and touch (long-press), with an aria-live status region so screen-reader
- * users get the same feedback sighted users get from the animation.
- */
+import { motion } from "framer-motion";
+import { Mic } from "lucide-react";
+import type { DictationPhase } from "@/hooks/use-dictation";
 
-import * as React from "react";
-import { cn, formatMs } from "@/lib/utils";
-
-export type OrbPhase = "idle" | "arming" | "recording" | "transcribing" | "compiling" | "done" | "error";
-
-const PHASE_LABEL: Record<OrbPhase, string> = {
+const PHASE_LABEL: Record<DictationPhase, string> = {
   idle: "Hold to think",
-  arming: "Warming…",
+  warming: "Warming…",
   recording: "Listening…",
   transcribing: "Transcribing…",
-  compiling: "Compiling…",
-  done: "Committed",
-  error: "Retry",
+  cleaning: "Polishing…",
+  committing: "Committing…",
+  council: "Council convening…",
+  done: "Hold to think",
+  error: "Try again",
 };
 
-const PHASE_TONE: Record<OrbPhase, string> = {
-  idle: "from-vox-cyan/70 to-vox-violet/60",
-  arming: "from-vox-amber/70 to-vox-cyan/60",
-  recording: "from-vox-cyan to-vox-violet",
-  transcribing: "from-vox-violet to-vox-cyan/70",
-  compiling: "from-vox-amber to-vox-violet/70",
-  done: "from-vox-emerald to-vox-cyan/70",
-  error: "from-vox-rose to-vox-amber/70",
-};
-
-export function Orb({
+export default function Orb({
   phase,
-  level,
-  elapsedMs,
   confidence,
-  ambient,
-  disabled,
-  onStart,
-  onStop,
-  onCancel,
+  onPointerDown,
+  onPointerUp,
 }: {
-  phase: OrbPhase;
-  level: number;
-  elapsedMs: number;
-  confidence: number | null;
-  ambient: boolean;
-  disabled?: boolean;
-  onStart: () => void;
-  onStop: () => void;
-  onCancel?: () => void;
+  phase: DictationPhase;
+  confidence: number;
+  onPointerDown: () => void;
+  onPointerUp: () => void;
 }) {
-  const held = React.useRef(false);
-  const busy = phase === "transcribing" || phase === "compiling";
-  const recording = phase === "recording" || phase === "arming";
-
-  // Ring radius: mic level while speaking, API confidence after the round-trip.
-  const ring = recording ? 8 + level * 26 : phase === "done" && confidence != null ? 6 + confidence * 18 : 0;
-
-  const down = React.useCallback(() => {
-    if (disabled || busy || ambient || held.current) return;
-    held.current = true;
-    onStart();
-  }, [disabled, busy, ambient, onStart]);
-
-  const up = React.useCallback(() => {
-    if (!held.current) return;
-    held.current = false;
-    onStop();
-  }, [onStop]);
-
-  // Keyboard parity: Space/Enter behave exactly like holding the orb.
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === " " || e.key === "Enter") {
-      e.preventDefault();
-      down();
-    } else if (e.key === "Escape" && recording) {
-      e.preventDefault();
-      held.current = false;
-      onCancel?.();
-    }
-  };
-  const onKeyUp = (e: React.KeyboardEvent) => {
-    if (e.key === " " || e.key === "Enter") {
-      e.preventDefault();
-      up();
-    }
-  };
-
-  // A pointer released outside the orb must still end the utterance.
-  React.useEffect(() => {
-    const onWindowUp = () => up();
-    window.addEventListener("pointerup", onWindowUp);
-    window.addEventListener("pointercancel", onWindowUp);
-    return () => {
-      window.removeEventListener("pointerup", onWindowUp);
-      window.removeEventListener("pointercancel", onWindowUp);
-    };
-  }, [up]);
+  const active = phase === "recording" || phase === "warming";
+  const busy =
+    phase === "transcribing" ||
+    phase === "cleaning" ||
+    phase === "committing" ||
+    phase === "council";
+  // Confidence ring radius encodes returned confidence.
+  const ringScale = 1 + (confidence ? confidence * 0.35 : 0);
 
   return (
-    <div className="flex flex-col items-center gap-2">
-      <div className="relative flex h-[104px] w-[104px] items-center justify-center">
-        {/* Confidence / level ring */}
-        <span
-          aria-hidden="true"
-          className={cn(
-            "pointer-events-none absolute rounded-full border-2 transition-all duration-100",
-            recording ? "border-vox-cyan/60" : phase === "done" ? "border-vox-emerald/60" : "border-transparent",
-          )}
-          style={{ height: 72 + ring * 2, width: 72 + ring * 2 }}
-        />
-        {ambient && (
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute h-[92px] w-[92px] animate-orb-pulse rounded-full border border-vox-violet/50"
-          />
+    <div className="flex flex-col items-center justify-center gap-4 select-none">
+      <button
+        type="button"
+        aria-label="Hold to dictate a Thoughtform"
+        aria-pressed={active}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          onPointerDown();
+        }}
+        onPointerUp={(e) => {
+          e.preventDefault();
+          onPointerUp();
+        }}
+        onPointerLeave={() => {
+          if (active) onPointerUp();
+        }}
+        className="relative grid h-28 w-28 place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-vox-teal/60 md:h-32 md:w-32"
+      >
+        {/* Outer glow */}
+        <div className="orb-glow absolute inset-0 rounded-full blur-md" />
+        {/* Pulse rings when active */}
+        {active && (
+          <>
+            <span className="absolute inset-2 rounded-full border border-vox-teal/40 animate-pulse-ring" />
+            <span className="absolute inset-2 rounded-full border border-vox-purple/40 animate-pulse-ring [animation-delay:0.5s]" />
+          </>
         )}
-        <button
-          type="button"
-          disabled={disabled}
-          aria-label={
-            ambient
-              ? "Ambient Mode is listening continuously. Turn off Ambient Mode to use push-to-think."
-              : "Push to Think — hold to dictate a Thoughtform. Press and hold Space or Enter, release to commit, Escape to cancel."
-          }
-          aria-pressed={recording}
-          onPointerDown={(e) => {
-            e.preventDefault();
-            down();
-          }}
-          onKeyDown={onKeyDown}
-          onKeyUp={onKeyUp}
-          className={cn(
-            "relative grid h-[72px] w-[72px] place-items-center rounded-full bg-gradient-to-br text-primary-foreground transition-transform",
-            "shadow-[0_8px_40px_-8px_rgba(34,211,238,0.6)] disabled:opacity-40",
-            PHASE_TONE[phase],
-            recording ? "scale-95" : "hover:scale-105",
-            !recording && !busy && !ambient && "animate-orb-pulse",
-          )}
+        {/* Confidence ring */}
+        <motion.span
+          className="absolute rounded-full border border-vox-teal/50"
+          style={{ inset: 8 }}
+          animate={{ scale: busy ? [1, 1.08, 1] : ringScale, opacity: confidence ? 0.9 : 0.3 }}
+          transition={busy ? { repeat: Infinity, duration: 1.1 } : { type: "spring" }}
+        />
+        <motion.span
+          className="relative grid h-20 w-20 place-items-center rounded-full bg-gradient-to-br from-vox-purple/90 to-vox-teal/80 shadow-glow md:h-24 md:w-24"
+          animate={{ scale: active ? [1, 1.05, 1] : 1 }}
+          transition={active ? { repeat: Infinity, duration: 1 } : {}}
         >
-          {busy ? (
-            <svg viewBox="0 0 24 24" className="h-7 w-7 animate-spin" fill="none" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.3" />
-              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" className="h-8 w-8" fill="currentColor" aria-hidden="true">
-              <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v5.5A3.5 3.5 0 0 0 12 15Z" />
-              <path d="M18.5 11.5a.9.9 0 0 0-1.8 0 4.7 4.7 0 0 1-9.4 0 .9.9 0 0 0-1.8 0 6.5 6.5 0 0 0 5.6 6.4V20H9.7a.9.9 0 0 0 0 1.8h4.6a.9.9 0 0 0 0-1.8h-1.4v-2.1a6.5 6.5 0 0 0 5.6-6.4Z" />
-            </svg>
-          )}
-        </button>
-      </div>
+          <Mic className="h-7 w-7 text-base-950 md:h-8 md:w-8" strokeWidth={2.2} />
+        </motion.span>
+      </button>
 
       <div className="text-center">
-        <div className="font-mono text-xs font-semibold text-foreground">{PHASE_LABEL[phase]}</div>
-        <div className="h-4 font-mono text-[11px] text-muted-foreground">
-          {recording ? formatMs(elapsedMs) : phase === "idle" && !ambient ? "hold space" : ambient ? "ambient on" : ""}
-        </div>
+        <p className="text-sm font-medium text-ink">{PHASE_LABEL[phase]}</p>
+        <p className="text-[11px] text-ink-muted">hold space</p>
       </div>
-
-      {/* Screen readers get the same state changes the animation conveys. */}
-      <span aria-live="assertive" aria-atomic="true" className="sr-only-focusable absolute">
-        {PHASE_LABEL[phase]}
-      </span>
-    </div>
-  );
-}
-
-/** Waveform strip rendered under the Orb while recording (and on published artifacts). */
-export function Waveform({ peaks, className, tone = "cyan" }: { peaks: number[]; className?: string; tone?: "cyan" | "violet" }) {
-  const color = tone === "cyan" ? "bg-vox-cyan/70" : "bg-vox-violet/70";
-  return (
-    <div className={cn("flex h-8 items-center gap-[2px]", className)} aria-hidden="true">
-      {peaks.map((p, i) => (
-        <span key={i} className={cn("w-[3px] shrink-0 rounded-full transition-all", color)} style={{ height: `${Math.max(6, p * 100)}%` }} />
-      ))}
     </div>
   );
 }

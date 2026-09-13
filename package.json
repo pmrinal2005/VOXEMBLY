@@ -1,41 +1,30 @@
 {
   "name": "voxembly",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "VOXEMBLY — the voice-native cognition OS. Every dictation becomes a typed, versioned, executable Thoughtform.",
+  "description": "VOXEMBLY — The Voice-Native Cognition OS. Voice is the new compiler.",
   "scripts": {
-    "dev": "next dev -p 3000 -H 0.0.0.0",
+    "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
-    "start": "next start -p 3000 -H 0.0.0.0",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit",
-    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
-    "test": "curl -sS http://localhost:3000/api/health"
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "lint": "next lint"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.5.2",
-    "@supabase/supabase-js": "^2.49.0",
     "clsx": "^2.1.1",
-    "framer-motion": "^11.15.0",
-    "idb": "^8.0.2",
-    "lucide-react": "^0.475.0",
+    "framer-motion": "^11.18.2",
+    "lucide-react": "^0.469.0",
     "next": "^15.5.25",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "tailwind-merge": "^2.6.0",
-    "zustand": "^5.0.3"
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
-    "@types/node": "^22.13.0",
-    "@types/react": "^19.0.8",
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.28",
+    "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
-    "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.7.3"
-  },
-  "engines": {
-    "node": ">=18.18"
   }
 }

@@ -2,132 +2,82 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 222 47% 5%;
-    --foreground: 210 40% 96%;
-    --card: 222 40% 8%;
-    --card-foreground: 210 40% 96%;
-    --popover: 222 44% 7%;
-    --popover-foreground: 210 40% 96%;
-    --primary: 187 92% 53%;
-    --primary-foreground: 222 47% 8%;
-    --secondary: 222 30% 14%;
-    --secondary-foreground: 210 40% 96%;
-    --muted: 222 26% 14%;
-    --muted-foreground: 215 20% 68%;
-    --accent: 258 90% 72%;
-    --accent-foreground: 222 47% 8%;
-    --destructive: 351 95% 71%;
-    --destructive-foreground: 222 47% 8%;
-    --border: 217 28% 20%;
-    --input: 217 28% 18%;
-    --ring: 187 92% 53%;
-    --radius: 0.75rem;
-  }
+:root {
+  --bg: #060913;
+}
 
-  /* High-contrast theme (WCAG 2.2 AA / AAA text contrast) — Settings toggle + voice command. */
-  .hc {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
-    --card: 0 0% 4%;
-    --card-foreground: 0 0% 100%;
-    --muted: 0 0% 12%;
-    --muted-foreground: 0 0% 88%;
-    --border: 0 0% 55%;
-    --input: 0 0% 24%;
-    --primary: 186 100% 62%;
-    --accent: 258 100% 82%;
-    --ring: 60 100% 60%;
-  }
+* {
+  -webkit-tap-highlight-color: transparent;
+}
 
-  * {
-    @apply border-border;
-  }
+html,
+body {
+  background: var(--bg);
+  color: #e5edf7;
+  overscroll-behavior: none;
+}
 
-  html,
-  body {
-    @apply bg-background text-foreground;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
+body {
+  font-feature-settings: "cv11", "ss01";
+  text-rendering: optimizeLegibility;
+}
 
-  /* Visible focus for every interactive element — keyboard + switch-access parity. */
-  :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
-  }
+/* Subtle scrollbars for the dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2b3a54;
+}
 
-  ::selection {
-    background: hsl(187 92% 53% / 0.3);
+@layer components {
+  /* Reusable bento panel */
+  .panel {
+    @apply rounded-2xl border border-line bg-base-850/80 shadow-panel backdrop-blur-sm;
+  }
+  .panel-header {
+    @apply flex items-center justify-between gap-2 px-4 py-3 border-b border-line/70;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] font-medium;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-vox-teal/60;
+  }
+  .btn-primary {
+    @apply btn bg-vox-teal/90 text-base-950 hover:bg-vox-teal;
+  }
+  .btn-outline {
+    @apply btn border border-line text-ink-muted hover:text-ink hover:border-ink-faint;
+  }
+  .mono {
+    @apply font-mono text-[11px] tracking-tight;
+  }
+  .label-caps {
+    @apply text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-muted;
   }
 }
 
-@layer utilities {
-  .glass {
-    background: linear-gradient(180deg, hsl(var(--card) / 0.9), hsl(var(--card) / 0.65));
-    backdrop-filter: blur(12px);
-  }
-
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--border)) transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: hsl(var(--border));
-    border-radius: 8px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  /* Screen-reader-only, but focusable (skip link). */
-  .sr-only-focusable:not(:focus):not(:focus-within) {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
-  }
-
-  .grid-bg {
-    background-image:
-      radial-gradient(circle at 50% 0%, hsl(187 92% 53% / 0.07), transparent 55%),
-      linear-gradient(hsl(var(--border) / 0.25) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(var(--border) / 0.25) 1px, transparent 1px);
-    background-size:
-      100% 100%,
-      44px 44px,
-      44px 44px;
-  }
-
-  .text-balance {
-    text-wrap: balance;
-  }
+/* Confidence heatmap word tint */
+.conf-word {
+  border-radius: 3px;
+  padding: 0 1px;
 }
 
-/* Respect the OS setting AND the in-app Reduce Motion preference. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
-  }
-}
-
-.reduce-motion *,
-.reduce-motion *::before,
-.reduce-motion *::after {
-  animation-duration: 0.001ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
+/* Radial glow used behind the orb */
+.orb-glow {
+  background: radial-gradient(
+    circle at center,
+    rgba(167, 139, 250, 0.55) 0%,
+    rgba(0, 203, 214, 0.25) 40%,
+    transparent 70%
+  );
 }

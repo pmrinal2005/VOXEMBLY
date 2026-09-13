@@ -1,51 +1,74 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  darkMode: ["class"],
-  content: ["./src/**/*.{ts,tsx}"],
+  content: [
+    "./src/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
   theme: {
     extend: {
-      fontFamily: {
-        sans: ["var(--font-inter)", "system-ui", "sans-serif"],
-        mono: ["var(--font-jetbrains)", "ui-monospace", "monospace"],
-      },
       colors: {
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
-        popover: { DEFAULT: "hsl(var(--popover))", foreground: "hsl(var(--popover-foreground))" },
-        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
-        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
-        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
-        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
-        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
+        // VOXEMBLY dark palette (grounded in the reference dashboard)
+        base: {
+          950: "#060913", // deepest background
+          900: "#0B0F19", // app background
+          850: "#0E1424", // panel background
+          800: "#0F172A", // card background
+          700: "#111a30",
+        },
+        line: {
+          DEFAULT: "#1E293B", // subtle slate borders
+          soft: "#172033",
+        },
+        ink: {
+          DEFAULT: "#E5EDF7", // primary text
+          muted: "#94A3B8",  // secondary labels
+          faint: "#475569",  // auxiliary
+        },
+        // Node / accent semantic colors
         vox: {
-          cyan: "#22d3ee",
-          violet: "#a78bfa",
-          amber: "#fbbf24",
-          rose: "#fb7185",
-          emerald: "#34d399",
+          teal: "#00CBD6",
+          tealDim: "#00A5B5",
+          green: "#10B981",
+          amber: "#F59E0B",
+          purple: "#A78BFA",
+          pink: "#EC4899",
         },
       },
-      borderRadius: { lg: "var(--radius)", md: "calc(var(--radius) - 2px)", sm: "calc(var(--radius) - 4px)" },
+      fontFamily: {
+        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
+      },
+      borderRadius: {
+        xl: "0.75rem",
+        "2xl": "1rem",
+      },
+      boxShadow: {
+        panel: "0 1px 0 0 rgba(255,255,255,0.02) inset, 0 8px 24px -12px rgba(0,0,0,0.6)",
+        glow: "0 0 0 1px rgba(0,203,214,0.25), 0 0 24px -4px rgba(0,203,214,0.35)",
+      },
       keyframes: {
-        "orb-pulse": {
-          "0%, 100%": { boxShadow: "0 0 0 0 rgba(34,211,238,0.55)" },
-          "50%": { boxShadow: "0 0 0 28px rgba(34,211,238,0)" },
+        "pulse-ring": {
+          "0%": { transform: "scale(0.9)", opacity: "0.7" },
+          "70%": { transform: "scale(1.6)", opacity: "0" },
+          "100%": { transform: "scale(1.6)", opacity: "0" },
         },
-        "fade-up": { from: { opacity: "0", transform: "translateY(6px)" }, to: { opacity: "1", transform: "translateY(0)" } },
-        shimmer: { "100%": { transform: "translateX(100%)" } },
+        "fade-in": {
+          "0%": { opacity: "0", transform: "translateY(6px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        shimmer: {
+          "0%": { backgroundPosition: "-200% 0" },
+          "100%": { backgroundPosition: "200% 0" },
+        },
       },
       animation: {
-        "orb-pulse": "orb-pulse 1.4s ease-out infinite",
-        "fade-up": "fade-up .35s ease-out both",
-        shimmer: "shimmer 1.6s infinite",
+        "pulse-ring": "pulse-ring 1.6s cubic-bezier(0.4,0,0.2,1) infinite",
+        "fade-in": "fade-in 0.35s ease-out both",
+        shimmer: "shimmer 2.4s linear infinite",
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [],
 };
+
 export default config;
