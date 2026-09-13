@@ -119,6 +119,19 @@ export function Studio() {
   /* ───────── boot ───────── */
 
   React.useEffect(() => {
+    // `?seed=demo` loads the demo Cognitive Twin (a fully-populated fixture with graph mutations,
+    // branches and agent runs) before hydrating — handy for demos, screenshots and first-run wow.
+    const wantsSeed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("seed") === "demo";
+    if (wantsSeed) {
+      void (async () => {
+        const { seedDemoTwin } = await import("@/lib/store/seed");
+        await seedDemoTwin();
+        await hydrate();
+        // Drop the query param so a refresh doesn't reseed and wipe the user's work.
+        window.history.replaceState(null, "", window.location.pathname);
+      })();
+      return;
+    }
     void hydrate();
   }, [hydrate]);
 
